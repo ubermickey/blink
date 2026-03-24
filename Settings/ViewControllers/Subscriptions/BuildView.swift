@@ -1,3 +1,4 @@
+#if !BLINK_FREE_BUILD
 //////////////////////////////////////////////////////////////////////////////////
 //
 // B L I N K
@@ -837,3 +838,5 @@ struct BuildRegionPickerView: View {
     .tint(Color("BuildColor"))
   }
 }
+
+#endif

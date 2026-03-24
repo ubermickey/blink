@@ -17,6 +17,7 @@ class EntitlementsManager: ObservableObject {
   func customerTier() -> CustomerTier { return .Free }
   func currentPeriodType() -> EntitlementPeriodType { return .Normal }
   func hasActiveSubscriptions() -> Bool { return true }
+  func currentPlanName() -> String { return "Free (Sideloaded)" }
   @Published var activeEntitlements: Set<String> = []
   @Published var unlockStatus: Bool = true
   @Published var earlyAccessFeatures: Entitlement = .earlyAccessFeatures
@@ -26,6 +27,16 @@ class EntitlementsManager: ObservableObject {
 
 class PurchasesUserModel: ObservableObject {
   static let shared = PurchasesUserModel()
+  @Published var purchaseInProgress: Bool = false
+  @Published var restoreInProgress: Bool = false
+  @Published var email: String = ""
+  @Published var alertErrorMessage: String? = nil
+  @Published var accountInfoLoadingInProgress: Bool = false
+  @Published var showTour: Bool = false
+  func openPrivacyAndPolicy() {}
+  func openTermsOfUse() {}
+  func fetchAccountInfo() async {}
+  func requestAccountDelete() async {}
 }
 
 class AppStoreEntitlementsSource {
