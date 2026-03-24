@@ -42,18 +42,12 @@ struct WalkthroughView: View {
   var body: some View { EmptyView() }
 }
 
-struct WalkthroughWindow: View {
-  var urlHandler: ((URL) -> Void)?
-  var dismissHandler: (() -> Void)?
-  var body: some View { EmptyView() }
-}
-
 struct PageCtx {
   let proxy: GeometryProxy
   let dynamicTypeSize: DynamicTypeSize
   var horizontalCompact: Bool = false
   var verticalCompact: Bool = false
-  let portrait: Bool
+  var portrait: Bool = true
   func pagePadding() -> EdgeInsets { EdgeInsets(top: 20, leading: 10, bottom: 20, trailing: 10) }
 }
 
