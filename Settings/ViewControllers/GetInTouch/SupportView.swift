@@ -31,7 +31,9 @@
 
 
 import SwiftUI
+#if !BLINK_FREE_BUILD
 import RevenueCat
+#endif
 
 struct SupportView: View {
   @EnvironmentObject private var _nav: Nav
@@ -103,6 +105,7 @@ struct SupportView: View {
         }
       }
 
+      #if !BLINK_FREE_BUILD
       Section(header: Text("Internals")) {
         Button {
           UIPasteboard.general.string = Purchases.shared.appUserID
@@ -110,6 +113,7 @@ struct SupportView: View {
           Label("Copy User ID", systemImage: "doc.on.clipboard")
         }
       }
+      #endif
     }
       .listStyle(.grouped)
       .navigationTitle("Support")

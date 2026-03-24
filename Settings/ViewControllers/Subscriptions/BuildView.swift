@@ -31,7 +31,9 @@
 
 
 import SwiftUI
+#if !BLINK_FREE_BUILD
 import RevenueCat
+#endif
 
 struct BuildView: View {
   @ObservedObject private var _purchases: PurchasesUserModel = .shared
