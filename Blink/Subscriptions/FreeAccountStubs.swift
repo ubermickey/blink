@@ -34,6 +34,10 @@ class AppStoreEntitlementsSource {
 
 let BLINK_APP_FONT_NAME: String = Bundle.main.infoDictionary?["BLINK_APP_FONT"] as? String ?? "JetBrains Mono"
 
+extension Bundle {
+  func receiptB64() -> String? { return nil }
+}
+
 import SwiftUI
 struct NewIntroPageWindow: View {
   var urlHandler: ((URL) -> Void)?
