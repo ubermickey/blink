@@ -72,6 +72,10 @@ struct PageCtx {
   func pagePadding() -> EdgeInsets { EdgeInsets(top: 20, leading: 10, bottom: 20, trailing: 10) }
 }
 
+struct BuildView: View {
+  var body: some View { Text("Build features require a subscription.") }
+}
+
 struct NewOfferingsView: View {
   var classicOffering: Bool = false
   var ctx: PageCtx? = nil
