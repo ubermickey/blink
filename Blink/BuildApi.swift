@@ -177,16 +177,19 @@ enum BuildAPI {
     
     let (code, data, _) = try await _post(
       _path("/application/signup"),
-      params: [
-        "email": email,
-        "region": region.rawValue,
+      params: {
         #if BLINK_FREE_BUILD
-        "rev_cat_user_id": "free-build",
+        let revCatId = "free-build"
         #else
-        "rev_cat_user_id": Purchases.shared.appUserID,
+        let revCatId = Purchases.shared.appUserID
         #endif
-        "receipt_b64": receiptB64
-      ]
+        return [
+          "email": email,
+          "region": region.rawValue,
+          "rev_cat_user_id": revCatId,
+          "receipt_b64": receiptB64
+        ]
+      }()
     )
 
     // 409 account exists

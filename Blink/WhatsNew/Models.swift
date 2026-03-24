@@ -88,12 +88,13 @@ extension URL {
       }
     }
     var components = URLComponents(url: self, resolvingAgainstBaseURL: false)!
+    #if BLINK_FREE_BUILD
+    let pid = "free-build"
+    #else
+    let pid = Purchases.shared.appUserID
+    #endif
     components.queryItems = [
-      URLQueryItem(name: "pid", value: #if BLINK_FREE_BUILD
-        "free-build"
-        #else
-        Purchases.shared.appUserID
-        #endif),
+      URLQueryItem(name: "pid", value: pid),
       URLQueryItem(name: "customer_tier", value: tier())
     ] + additionalParams
     
