@@ -37,4 +37,38 @@ struct NewIntroPageWindow: View {
   var dismissHandler: (() -> Void)?
   var body: some View { EmptyView() }
 }
+
+struct WalkthroughView: View {
+  var body: some View { EmptyView() }
+}
+
+struct WalkthroughWindow: View {
+  var urlHandler: ((URL) -> Void)?
+  var dismissHandler: (() -> Void)?
+  var body: some View { EmptyView() }
+}
+
+struct PageCtx {
+  let proxy: GeometryProxy
+  let dynamicTypeSize: DynamicTypeSize
+  var horizontalCompact: Bool = false
+  var verticalCompact: Bool = false
+  let portrait: Bool
+  func pagePadding() -> EdgeInsets { EdgeInsets(top: 20, leading: 10, bottom: 20, trailing: 10) }
+}
+
+struct NewOfferingsView: View {
+  var classicOffering: Bool = false
+  var ctx: PageCtx? = nil
+  var purchaseCompletedHandler: (() -> Void)? = nil
+  var urlHandler: ((URL) -> Void)? = nil
+  var dismissHandler: (() -> Void)? = nil
+  var body: some View { EmptyView() }
+}
+
+public struct Entitlement: Identifiable, Equatable, Hashable {
+  public var id: String
+  public var name: String = ""
+  public var isActive: Bool = false
+}
 #endif
