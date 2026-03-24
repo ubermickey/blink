@@ -43,6 +43,10 @@ class AppStoreEntitlementsSource {
   static let shared = AppStoreEntitlementsSource()
 }
 
+@objc public class PurchasesUserModelObjc: NSObject {
+  @objc public static func preparePurchasesUserModel() {}
+}
+
 let BLINK_APP_FONT_NAME: String = Bundle.main.infoDictionary?["BLINK_APP_FONT"] as? String ?? "JetBrains Mono"
 
 extension Bundle {
