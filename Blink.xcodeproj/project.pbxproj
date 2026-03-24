@@ -2930,12 +2930,6 @@
 						LastSwiftMigration = 0830;
 						ProvisioningStyle = Automatic;
 						SystemCapabilities = {
-							com.apple.DataProtection = {
-								enabled = 1;
-							};
-							com.apple.Keychain = {
-								enabled = 1;
-							};
 						};
 					};
 				};
@@ -5273,7 +5267,7 @@
 				DEAD_CODE_STRIPPING = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEFINES_MODULE = YES;
-				DEVELOPMENT_TEAM = "$(TEAM_ID)";
+				DEVELOPMENT_TEAM = X7Y74FL2Q9;
 				ENABLE_BITCODE = NO;
 				ENABLE_TESTABILITY = YES;
 				GCC_PREPROCESSOR_DEFINITIONS = (
@@ -5325,7 +5319,7 @@
 				CURRENT_PROJECT_VERSION = 1085;
 				DEAD_CODE_STRIPPING = NO;
 				DEFINES_MODULE = YES;
-				DEVELOPMENT_TEAM = "$(TEAM_ID)";
+				DEVELOPMENT_TEAM = X7Y74FL2Q9;
 				ENABLE_BITCODE = NO;
 				GCC_PREPROCESSOR_DEFINITIONS = "";
 				INFOPLIST_FILE = Blink/Info.plist;
