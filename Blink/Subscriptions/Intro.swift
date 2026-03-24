@@ -1,3 +1,4 @@
+#if !BLINK_FREE_BUILD
 //////////////////////////////////////////////////////////////////////////////////
 //
 // B L I N K
@@ -729,3 +730,5 @@ struct NewIntroPagePreview: PreviewProvider {
 
   }
 }
+
+#endif

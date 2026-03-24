@@ -1,3 +1,4 @@
+#if !BLINK_FREE_BUILD
 ////////////////////////////////////////////////////////////////////////////////
 //
 // B L I N K
@@ -193,3 +194,5 @@ public enum EntitlementPeriodType {
   case Normal
   case None
 }
+
+#endif

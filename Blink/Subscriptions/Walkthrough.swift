@@ -1,3 +1,4 @@
+#if !BLINK_FREE_BUILD
 //////////////////////////////////////////////////////////////////////////////////
 //
 // B L I N K
@@ -275,3 +276,5 @@ fileprivate struct WalkthroughPreviewWrapper: View {
   }
 }
 
+
+#endif
