@@ -399,6 +399,7 @@
 		D2AD8E5E27A2BAD600DED28D /* StatusBarLessViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AD8E5D27A2BAD600DED28D /* StatusBarLessViewController.swift */; };
 		D2AD8E7427A2BAFA00DED28D /* EntitlementsManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AD8E6527A2BAFA00DED28D /* EntitlementsManager.swift */; };
 		D2AD8E7527A2BAFA00DED28D /* PurchasesUserModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AD8E6627A2BAFA00DED28D /* PurchasesUserModel.swift */; };
+		FREEACCT0002000000000001 /* FreeAccountStubs.swift in Sources */ = {isa = PBXBuildFile; fileRef = FREEACCT0001000000000001 /* FreeAccountStubs.swift */; };
 		D2AD8E7627A2BAFA00DED28D /* Purchases.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AD8E6727A2BAFA00DED28D /* Purchases.swift */; };
 		D2AD8E8427A2C80C00DED28D /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AD8E8327A2C80C00DED28D /* SettingsView.swift */; };
 		D2AD9ADE22DB80DE00861F66 /* SessionRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2AD9ADD22DB80DE00861F66 /* SessionRegistry.swift */; };
@@ -1147,6 +1148,7 @@
 		D2AD8E5D27A2BAD600DED28D /* StatusBarLessViewController.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = StatusBarLessViewController.swift; sourceTree = "<group>"; };
 		D2AD8E6527A2BAFA00DED28D /* EntitlementsManager.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = EntitlementsManager.swift; sourceTree = "<group>"; };
 		D2AD8E6627A2BAFA00DED28D /* PurchasesUserModel.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PurchasesUserModel.swift; sourceTree = "<group>"; };
+		FREEACCT0001000000000001 /* FreeAccountStubs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreeAccountStubs.swift; sourceTree = "<group>"; };
 		D2AD8E6727A2BAFA00DED28D /* Purchases.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = Purchases.swift; sourceTree = "<group>"; };
 		D2AD8E8327A2C80C00DED28D /* SettingsView.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		D2AD9ADD22DB80DE00861F66 /* SessionRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionRegistry.swift; sourceTree = "<group>"; };
@@ -2229,6 +2231,7 @@
 				D20394A929E6B30400FB337F /* Receipt.swift */,
 				D2AD8E6527A2BAFA00DED28D /* EntitlementsManager.swift */,
 				D2AD8E6627A2BAFA00DED28D /* PurchasesUserModel.swift */,
+				FREEACCT0001000000000001 /* FreeAccountStubs.swift */,
 				D2AD8E6727A2BAFA00DED28D /* Purchases.swift */,
 				BDACC7742A6F100D00D0B261 /* TrialNotification.swift */,
 				D2CC13B629C05EE7008C71FA /* Intro.swift */,
@@ -3406,6 +3409,7 @@
 			files = (
 				BD23B6E12CB0585B0041C38D /* ios_patches.m in Sources */,
 				D2AD8E7527A2BAFA00DED28D /* PurchasesUserModel.swift in Sources */,
+				FREEACCT0002000000000001 /* FreeAccountStubs.swift in Sources */,
 				BDFA97352D959BC90020BBF2 /* TypingText.swift in Sources */,
 				BD9EA212271F824900874007 /* Publisher.swift in Sources */,
 				D241CBDF23040734003D64A5 /* KBKeyAccessibilityElement.swift in Sources */,
