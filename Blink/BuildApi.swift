@@ -31,7 +31,9 @@
 
 
 import Foundation
+#if !BLINK_FREE_BUILD
 import RevenueCat
+#endif
 
 
 struct BuildAccountInfo: Decodable {
@@ -178,7 +180,11 @@ enum BuildAPI {
       params: [
         "email": email,
         "region": region.rawValue,
+        #if BLINK_FREE_BUILD
+        "rev_cat_user_id": "free-build",
+        #else
         "rev_cat_user_id": Purchases.shared.appUserID,
+        #endif
         "receipt_b64": receiptB64
       ]
     )
@@ -234,7 +240,9 @@ enum BuildAPI {
   static func loginWithToken(token: Data) async throws {
     try token.write(to: BlinkPaths.blinkBuildTokenURL()!)
     if let buildId = TokioSignals.getBuildId() {
+      #if !BLINK_FREE_BUILD
       let _ = try await Purchases.shared.logIn(buildId)
+      #endif
     }
   }
 }

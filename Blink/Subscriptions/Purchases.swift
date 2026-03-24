@@ -1,3 +1,4 @@
+#if !BLINK_FREE_BUILD
 ////////////////////////////////////////////////////////////////////////////////
 //
 // B L I N K
@@ -33,7 +34,9 @@ import Combine
 import Foundation
 import SystemConfiguration
 
+#if !BLINK_FREE_BUILD
 import RevenueCat
+#endif
 import BlinkConfig
 
 public class AppStoreEntitlementsSource: NSObject, EntitlementsSource, PurchasesDelegate {
@@ -87,3 +90,5 @@ func configureRevCat() {
 
   Purchases.configure(with: cfg)
 }
+
+#endif

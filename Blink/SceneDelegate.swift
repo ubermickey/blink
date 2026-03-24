@@ -34,7 +34,9 @@ import Foundation
 import SafariServices
 import SwiftUI
 
+#if !BLINK_FREE_BUILD
 import RevenueCat
+#endif
 
 let Blink15BundleID = "sh.blink.blinkshell"
 

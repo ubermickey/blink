@@ -1,3 +1,4 @@
+#if !BLINK_FREE_BUILD
 //////////////////////////////////////////////////////////////////////////////////
 //
 // B L I N K
@@ -33,10 +34,14 @@
 import Combine
 import CryptoKit
 import Foundation
+#if !BLINK_FREE_BUILD
 import StoreKit
+#endif
 import SwiftUI
 
+#if !BLINK_FREE_BUILD
 import RevenueCat
+#endif
 
 extension Publisher {
   func tap(_ handler: @escaping () -> () ) -> AnyPublisher<Output, Failure> {
@@ -104,3 +109,5 @@ extension SKStore: SKRequestDelegate {
     _publisher?.send(completion: .failure(SKStoreError.requestError(error)))
   }
 }
+
+#endif

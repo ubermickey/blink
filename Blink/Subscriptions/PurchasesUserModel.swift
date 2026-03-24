@@ -1,3 +1,4 @@
+#if !BLINK_FREE_BUILD
 //////////////////////////////////////////////////////////////////////////////////
 //
 // B L I N K
@@ -29,7 +30,9 @@
 //
 ////////////////////////////////////////////////////////////////////////////////
 
+#if !BLINK_FREE_BUILD
 import RevenueCat
+#endif
 import Combine
 import SwiftUI
 import UIKit
@@ -521,3 +524,5 @@ extension Bundle {
     return receiptData?.base64EncodedString(options: [])
   }
 }
+
+#endif

@@ -1,3 +1,4 @@
+#if !BLINK_FREE_BUILD
 //////////////////////////////////////////////////////////////////////////////////
 //
 // B L I N K
@@ -31,7 +32,9 @@
 
 
 import Foundation
+#if !BLINK_FREE_BUILD
 import StoreKit
+#endif
 import ArgumentParser
 import BlinkConfig
 
@@ -97,3 +100,5 @@ public func skstore_main(argc: Int32, argv: Argv) -> Int32 {
   
   return SKStoreCmd.main(Array(argv.args(count: argc)[1...]), io: io)
 }
+
+#endif

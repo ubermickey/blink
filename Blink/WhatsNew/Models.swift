@@ -33,7 +33,9 @@ import Foundation
 import SwiftUI
 import BlinkConfig
 
+#if !BLINK_FREE_BUILD
 import RevenueCat
+#endif
 
 extension URLCache {
   static let imageCache = URLCache(memoryCapacity: 512*1000*1000, diskCapacity: 10*1000*1000*1000)
@@ -87,7 +89,11 @@ extension URL {
     }
     var components = URLComponents(url: self, resolvingAgainstBaseURL: false)!
     components.queryItems = [
-      URLQueryItem(name: "pid", value: Purchases.shared.appUserID),
+      URLQueryItem(name: "pid", value: #if BLINK_FREE_BUILD
+        "free-build"
+        #else
+        Purchases.shared.appUserID
+        #endif),
       URLQueryItem(name: "customer_tier", value: tier())
     ] + additionalParams
     
