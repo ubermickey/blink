@@ -42,6 +42,9 @@ struct NewIntroPageWindow: View {
 }
 
 struct WalkthroughView: View {
+  var ctx: PageCtx? = nil
+  var urlHandler: ((URL) -> Void)? = nil
+  var dismissHandler: (() -> Void)? = nil
   var body: some View { EmptyView() }
 }
 
