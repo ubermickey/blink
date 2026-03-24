@@ -17,4 +17,6 @@ class PurchasesUserModel: ObservableObject {
 class AppStoreEntitlementsSource {
   static let shared = AppStoreEntitlementsSource()
 }
+
+let BLINK_APP_FONT_NAME: String = Bundle.main.infoDictionary?["BLINK_APP_FONT"] as? String ?? "JetBrains Mono"
 #endif
