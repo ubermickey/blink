@@ -71,6 +71,10 @@ NSString *__iCloudsDriveDocumentsPath = nil;
 
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *path = [fm containerURLForSecurityApplicationGroupIdentifier:groupID].path;
+    if (path == nil) {
+      // Fallback for free developer accounts without App Groups
+      path = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    }
     __groupContainerPath = path;
   }
   return __groupContainerPath;

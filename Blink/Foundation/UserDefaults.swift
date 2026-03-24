@@ -35,5 +35,5 @@ import BlinkConfig
 
 extension UserDefaults {
   static var suiteName: String  { XCConfig.infoPlistFullGroupID() }
-  static let suite = UserDefaults(suiteName: suiteName)!
+  static let suite = UserDefaults(suiteName: suiteName) ?? UserDefaults.standard
 }
