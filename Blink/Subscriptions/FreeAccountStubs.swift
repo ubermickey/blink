@@ -7,7 +7,7 @@ public enum CustomerTier {
 }
 
 public enum EntitlementPeriodType {
-  case Trial, Intro, Normal
+  case Trial, Intro, Normal, None
 }
 
 class EntitlementsManager: ObservableObject {
@@ -19,6 +19,9 @@ class EntitlementsManager: ObservableObject {
   func hasActiveSubscriptions() -> Bool { return true }
   @Published var activeEntitlements: Set<String> = []
   @Published var unlockStatus: Bool = true
+  @Published var earlyAccessFeatures: Entitlement = .earlyAccessFeatures
+  @Published var build: Entitlement = .build
+  @Published var unlimitedScreenTime: Entitlement = .unlimitedScreenTime
 }
 
 class PurchasesUserModel: ObservableObject {
@@ -63,6 +66,11 @@ struct NewOfferingsView: View {
 public struct Entitlement: Identifiable, Equatable, Hashable {
   public var id: String
   public var name: String = ""
-  public var isActive: Bool = false
+  public var active: Bool = false
+  public var unlockProductID: String? = nil
+  public var period: EntitlementPeriodType = .None
+  public static var earlyAccessFeatures = Entitlement(id: "early_access_features", active: false, period: .None)
+  public static var build = Entitlement(id: "build", active: false, period: .None)
+  public static var unlimitedScreenTime = Entitlement(id: "unlimited_screen_time", active: false, period: .None)
 }
 #endif
