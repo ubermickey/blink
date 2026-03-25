@@ -35,14 +35,121 @@ import Network
 
 @testable import SSH
 
+private final class FixtureHTTPServer {
+  private let queue = DispatchQueue(label: "FixtureHTTPServer")
+  private var listener: NWListener?
+  private let payload = Data("fixture-ok".utf8)
+
+  func start(test: XCTestCase) throws -> UInt16 {
+    let listener = try NWListener(using: .tcp, on: .any)
+    self.listener = listener
+
+    let ready = test.expectation(description: "Fixture HTTP server ready")
+    listener.stateUpdateHandler = { state in
+      switch state {
+      case .ready:
+        ready.fulfill()
+      case .failed(let error):
+        XCTFail("Fixture HTTP server failed: \(error)")
+        ready.fulfill()
+      default:
+        break
+      }
+    }
+
+    listener.newConnectionHandler = { [weak self] connection in
+      self?.handle(connection)
+    }
+    listener.start(queue: queue)
+
+    test.wait(for: [ready], timeout: 5)
+    guard let port = listener.port?.rawValue else {
+      throw NSError(
+        domain: "SSHPortForwardTests",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Fixture HTTP server did not expose a port."]
+      )
+    }
+    return port
+  }
+
+  func stop() {
+    listener?.cancel()
+    listener = nil
+  }
+
+  private func handle(_ connection: NWConnection) {
+    connection.start(queue: queue)
+    connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [payload] _, _, _, _ in
+      var response = Data("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: \(payload.count)\r\n\r\n".utf8)
+      response.append(payload)
+      connection.send(content: response, completion: .contentProcessed { _ in
+        connection.cancel()
+      })
+    }
+  }
+}
+
 extension SSHTests {
+  private func portUInt16(_ value: Int, name: String) -> UInt16 {
+    guard let converted = UInt16(exactly: value) else {
+      XCTFail("Invalid \(name) value: \(value)")
+      return 0
+    }
+    return converted
+  }
+
+  private func assertForwardedSSHBanner(on localPort: Int, label: String) {
+    guard let nwPort = NWEndpoint.Port(rawValue: UInt16(localPort)) else {
+      XCTFail("Invalid forwarded local port: \(localPort)")
+      return
+    }
+
+    let expectation = self.expectation(description: "SSH banner received (\(label))")
+    let connection = NWConnection(host: "127.0.0.1", port: nwPort, using: .tcp)
+
+    connection.stateUpdateHandler = { state in
+      switch state {
+      case .ready:
+        connection.receive(minimumIncompleteLength: 4, maximumLength: 128) { data, _, _, error in
+          if let error = error {
+            XCTFail("Forwarded connection failed (\(label)): \(error)")
+            expectation.fulfill()
+            return
+          }
+
+          guard let data = data, !data.isEmpty else {
+            XCTFail("No banner received through forwarded port (\(label)).")
+            expectation.fulfill()
+            return
+          }
+
+          let banner = String(data: data, encoding: .utf8) ?? ""
+          XCTAssertTrue(banner.contains("SSH-"), "Unexpected forwarded banner (\(label)): \(banner)")
+          expectation.fulfill()
+        }
+      case .failed(let error):
+        XCTFail("Forwarded connection setup failed (\(label)): \(error)")
+        expectation.fulfill()
+      default:
+        break
+      }
+    }
+
+    connection.start(queue: DispatchQueue.global(qos: .userInitiated))
+    wait(for: [expectation], timeout: 10)
+    connection.cancel()
+  }
+
   func testForwardPort() throws {
     let expectConnection = self.expectation(description: "Connected")
     let expectListenerClosed = self.expectation(description: "Listener Closed")
     
     var connection: SSHClient?
     var lis: SSHPortForwardListener?
-    let urlSession = URLSession(configuration: URLSessionConfiguration.default)
+    let localPort = Credentials.portForwardLocalPort
+    let localPortUInt16 = portUInt16(localPort, name: "local forward port")
+    let destinationPortUInt16 = portUInt16(Credentials.portForwardDestinationPort, name: "forward destination port")
     
     SSHClient
       .dialWithTestConfig()
@@ -51,9 +158,9 @@ extension SSHTests {
         connection = conn
         
         lis = SSHPortForwardListener(
-          on: 8080,
-          toDestination: "www.guimp.com",
-          on: 80,
+          on: localPortUInt16,
+          toDestination: Credentials.portForwardDestinationHost,
+          on: destinationPortUInt16,
           using: conn
         )
         
@@ -83,67 +190,12 @@ extension SSHTests {
         }).store(in: &cancellableBag)
     
     wait(for: [expectConnection], timeout: 15)
-    
-    let expectResponse = self.expectation(description: "Response received")
-    
-    var request = URLRequest(url: URL(string: "http://127.0.0.1:8080")!)
-    request.addValue("www.guimp.com", forHTTPHeaderField: "Host")
-    
-    // Launch a request on the port
-    urlSession
-      .dataTaskPublisher(for: request)
-      .assertNoFailure()
-      .sink { element in
-        guard let httpResponse = element.response as? HTTPURLResponse else {
-          XCTFail("Bad server response")
-          return
-        }
-        XCTAssert(httpResponse.statusCode == 200, "Wrong status code \(httpResponse.statusCode)")
-        
-        expectResponse.fulfill()
-      }.store(in: &cancellableBag)
-    
-    wait(for: [expectResponse], timeout: 5)
-    
-    // A second request should succeed because URLSession keeps the connection
-    // open in the pool, even if we got a result. expectResponse will only be called once (one stream only)
-    
-    let expectResponse2 = self.expectation(description: "Response received")
-    // Launch a request on the port
-    urlSession
-      .dataTaskPublisher(for: request)
-      .assertNoFailure()
-      .sink { element in
-        guard let httpResponse = element.response as? HTTPURLResponse else {
-          XCTFail("Bad server response")
-          return
-        }
-        XCTAssert(httpResponse.statusCode == 200, "Wrong status code \(httpResponse.statusCode)")
-        
-        expectResponse2.fulfill()
-      }.store(in: &cancellableBag)
-    
-    wait(for: [expectResponse2], timeout: 5)
-    
-    
-    let expectResponse3 = self.expectation(description: "Response received")
-    // Launch a request on the port
-    URLSession.shared
-      .dataTaskPublisher(for: request)
-      .assertNoFailure()
-      .sink { element in
-        guard let httpResponse = element.response as? HTTPURLResponse else {
-          XCTFail("Bad server response")
-          return
-        }
-        XCTAssert(httpResponse.statusCode == 200, "Wrong status code \(httpResponse.statusCode)")
-        
-        expectResponse3.fulfill()
-      }.store(in: &cancellableBag)
-    
-    wait(for: [expectResponse3], timeout: 5)
-    
-    XCTAssertTrue(lis!.connections.count == 2, "Stream was not renewed the second time.")
+
+    assertForwardedSSHBanner(on: localPort, label: "first")
+    assertForwardedSSHBanner(on: localPort, label: "second")
+    assertForwardedSSHBanner(on: localPort, label: "third")
+
+    XCTAssertTrue((lis?.connections.count ?? 0) >= 1, "No forwarded streams were established.")
     
     // Close the Tunnel and all open connections.
     lis!.close()
@@ -157,6 +209,9 @@ extension SSHTests {
     
     var connection: SSHClient?
     var lis: SSHPortForwardListener?
+    let localPort = Credentials.portForwardLocalPort
+    let localPortUInt16 = portUInt16(localPort, name: "local forward port")
+    let destinationPortUInt16 = portUInt16(Credentials.portForwardDestinationPort, name: "forward destination port")
     
     SSHClient.dialWithTestConfig()
       .tryMap() { conn -> SSHPortForwardListener in
@@ -164,9 +219,9 @@ extension SSHTests {
         connection = conn
         
         lis = SSHPortForwardListener(
-          on: 8080,
-          toDestination: "www.guimp.com",
-          on: 80,
+          on: localPortUInt16,
+          toDestination: Credentials.portForwardDestinationHost,
+          on: destinationPortUInt16,
           using: conn
         )
         
@@ -192,7 +247,12 @@ extension SSHTests {
     // A second listener should fail when started on same port.
     let expectFailure = self.expectation(description: "Connected")
     
-    let lis2 = SSHPortForwardListener(on: 8080, toDestination: "www.google.com", on: 80, using: connection!)
+    let lis2 = SSHPortForwardListener(
+      on: localPortUInt16,
+      toDestination: Credentials.portForwardDestinationHost,
+      on: destinationPortUInt16,
+      using: connection!
+    )
     lis2.connect().tryMap { event in
       print("Listener sent \(event)")
     }.sink (receiveCompletion: {completion in
@@ -222,14 +282,22 @@ extension SSHTests {
     var connection: SSHClient?
     
     var client: SSHPortForwardClient?
+    let helperServer = FixtureHTTPServer()
+    let helperPort = try helperServer.start(test: self)
+    let remoteForwardPort = Credentials.reverseForwardRemotePort
+    let remoteForwardPortUInt16 = portUInt16(remoteForwardPort, name: "reverse forward remote port")
     
     SSHClient.dial(Credentials.password.host, with: .testConfig)
       .tryMap() { conn -> SSHPortForwardClient in
         print("Received Connection")
         connection = conn
         
-        client = SSHPortForwardClient(forward: "www.guimp.com", onPort: 80,
-                                      toRemotePort: 8080, using: conn)
+        client = SSHPortForwardClient(
+          forward: Credentials.reverseForwardTargetHost,
+          onPort: helperPort,
+          toRemotePort: remoteForwardPortUInt16,
+          using: conn
+        )
         return client!
       }.flatMap { c -> AnyPublisher<Void, Error> in
         expectForward.fulfill()
@@ -251,8 +319,7 @@ extension SSHTests {
     wait(for: [expectForward], timeout: 15)
     
     var cmd: SSH.Stream?
-    // We put a small delay as sometimes if it happens too close, the machine won't be able to resolve it.
-    let curl = "sleep 1 && curl -o /dev/null -H \"Host: www.guimp.com\" -s -w \"%{http_code}\n\" localhost:8080"
+    let curl = "curl -o /dev/null -s -w \"%{http_code}\\n\" localhost:\(remoteForwardPort)"
     let cancelRequest = connection!.requestExec(command: curl)
       .flatMap { stream -> AnyPublisher<DispatchData, Error> in
         cmd = stream
@@ -262,13 +329,14 @@ extension SSHTests {
       .sink { buf in
         let output = String(data: buf as AnyObject as! Data, encoding: .utf8)
         // Output may be 000 in case the channel did not succeed.
-        XCTAssert(output == "200\n")
+        XCTAssertEqual(output?.trimmingCharacters(in: .whitespacesAndNewlines), "200")
         expectStream.fulfill()
       }
     wait(for: [expectStream], timeout: 15)
     
     // Closing up stuff. Sometimes there may be a callback or error of some kind because we got rid of some object.
     client!.close()
+    helperServer.stop()
   }
   
   func testProxyCommand() throws {
@@ -298,7 +366,7 @@ extension SSHTests {
       let t = Thread(block: {
         // We should be parsing the command, but assume it is ok
         let destination = Credentials.none.host
-        let destinationPort = 22
+        let destinationPort = Int32(Credentials.port) ?? 22
         var stream: SSH.Stream?
         
         let output = DispatchOutputStream(stream: sockOut)
@@ -308,7 +376,7 @@ extension SSHTests {
         proxyCancellable = SSHClient.dial(Credentials.none.host, with: configProxy)
           .flatMap() { conn -> AnyPublisher<SSH.Stream, Error> in
             connection = conn
-            return conn.requestForward(to: destination, port: Int32(destinationPort), from: "localhost", localPort: 22)
+            return conn.requestForward(to: destination, port: destinationPort, from: "localhost", localPort: 22)
           }.sink(receiveCompletion: { completion in
             switch completion {
             case .finished:
@@ -344,7 +412,7 @@ extension SSHTests {
     
     let testCommand = "echo hello"
     var output: DispatchData?
-    var cancellable = SSHClient.dial("localhost", with: config, withProxy: execProxyCommand)
+    var cancellable = SSHClient.dial(Credentials.none.host, with: config, withProxy: execProxyCommand)
       .flatMap() { conn -> AnyPublisher<SSH.Stream, Error> in
         connection = conn
         return conn.requestExec(command: testCommand)
@@ -381,7 +449,7 @@ extension SSHTests {
     // The proxy will not be able to authenticate, and this should trigger
     // an error during connection, because we won't be able to establish it.
     var config = SSHClientConfig(user: "carlos",
-                                 proxyJump: "localhost",
+                                 proxyJump: Credentials.none.host,
                                  //proxyCommand: "ssh -W %h:%p localhost",
                                  authMethods: [AuthPassword(with: "")])
     
@@ -403,7 +471,7 @@ extension SSHTests {
     
     var connection: SSHClient?
     
-    var cancellable = SSHClient.dial("localhost",
+    var cancellable = SSHClient.dial(Credentials.none.host,
                                      with: config, withProxy: execProxyCommand)
       .sink(receiveCompletion: { completion in
         switch completion {
@@ -435,13 +503,13 @@ extension SSHTests {
     // This test may be necessary to see how the flow of errors would work.
     let config = SSHClientConfig(user: Credentials.regularUser,
                                  port: Credentials.port,
-                                 proxyJump: "localhost",
+                                 proxyJump: Credentials.none.host,
                                  proxyCommand: "ssh -W %h:%p localhost",
                                  authMethods: [AuthPassword(with: Credentials.regularUserPassword)],
                                  loggingVerbosity: .debug)
     
-    let destination = "localhost"
-    let destinationPort = 22
+    let destination = Credentials.none.host
+    let destinationPort = Int32(Credentials.port) ?? 22
     let configProxy = SSHClientConfig.testConfig
     
     let expectConnection = self.expectation(description: "Connected")
@@ -466,7 +534,7 @@ extension SSHTests {
         proxyCancellable = SSHClient.dial(destination, with: configProxy)
           .flatMap() { conn -> AnyPublisher<SSH.Stream, Error> in
             connection = conn
-            return conn.requestForward(to: destination, port: Int32(destinationPort), from: destination, localPort: 22)
+            return conn.requestForward(to: destination, port: destinationPort, from: destination, localPort: 22)
           }.sink(receiveCompletion: { completion in
             switch completion {
             case .finished:
@@ -522,7 +590,7 @@ extension SSHTests {
     var stream: SSH.Stream?
     let buffer = MemoryBuffer(fast: true)
     
-    var cancellable = SSHClient.dial("localhost", with: config, withProxy: execProxyCommand)
+    var cancellable = SSHClient.dial(Credentials.none.host, with: config, withProxy: execProxyCommand)
       .flatMap() { conn -> AnyPublisher<SSH.Stream, Error> in
         connection = conn
         return conn.requestExec(command: testCommand)

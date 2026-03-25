@@ -31,6 +31,7 @@
 
 import Combine
 import XCTest
+import Foundation
 
 import SSH
 
@@ -74,6 +75,10 @@ final class MoshBootstrapTests: XCTestCase {
   }
   
   func testMoshDownloadBinaries() throws {
+    guard ProcessInfo.processInfo.environment["FIXTURE_ALLOW_NETWORK_DOWNLOADS"] == "1" else {
+      throw XCTSkip("Skipping internet-dependent Mosh binary download test in fixture-backed automation.")
+    }
+
     let logger = MoshLogger(output: OutputStream(file: stdout), logLevel: .info)
     let moshBootstrap = InstallStaticMosh(promptUser: false, logger: logger)
     
@@ -104,11 +109,36 @@ final class MoshBootstrapTests: XCTestCase {
 // TODO Test configurations from .ssh/config + parameters. How? This will have to go to the QA instructions.
 
 extension SSHClientConfig {
-  static let testHost = "localhost"
+  private static let env = ProcessInfo.processInfo.environment
+
+  private static func nonEmptyEnv(_ key: String) -> String? {
+    guard let value = env[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+      return nil
+    }
+    return value
+  }
+
+  private static func firstEnv(_ keys: [String], default defaultValue: String) -> String {
+    for key in keys {
+      if let value = nonEmptyEnv(key) {
+        return value
+      }
+    }
+    return defaultValue
+  }
+
+  static let testHost: String = {
+#if targetEnvironment(simulator)
+    return firstEnv(["BLINK_TEST_HOST", "FIXTURE_SIM_HOST"], default: "localhost")
+#else
+    return firstEnv(["BLINK_TEST_HOST", "FIXTURE_DEVICE_HOST", "FIXTURE_SIM_HOST"], default: "localhost")
+#endif
+  }()
+
   static let testConfig = SSHClientConfig(
-    user: "asdf",
-    port: "22",
-    authMethods: [AuthPassword(with: "")],
+    user: firstEnv(["BLINK_TEST_USER"], default: "regular"),
+    port: firstEnv(["BLINK_TEST_PORT", "FIXTURE_SSH_PORT"], default: "2222"),
+    authMethods: [AuthPassword(with: firstEnv(["BLINK_TEST_PASSWORD"], default: "regular"))],
     loggingVerbosity: .debug
   )
 }

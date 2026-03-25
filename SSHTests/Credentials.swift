@@ -36,16 +36,59 @@ struct Credentials {
   let password: String
   let host: String
   
+  private static let env = ProcessInfo.processInfo.environment
+
+  private static func nonEmptyEnv(_ key: String) -> String? {
+    guard let value = env[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+      return nil
+    }
+    return value
+  }
+
+  private static func firstEnv(_ keys: [String], default defaultValue: String) -> String {
+    for key in keys {
+      if let value = nonEmptyEnv(key) {
+        return value
+      }
+    }
+    return defaultValue
+  }
+
+  private static let fixtureRunID = firstEnv(["FIXTURE_RUN_ID"], default: "local")
+
+  private static func hashedPort(base: Int, span: Int = 500) -> String {
+    let hash = fixtureRunID.unicodeScalars.reduce(0) { partial, scalar in
+      (partial + Int(scalar.value)) % span
+    }
+    return String(base + hash)
+  }
+
   static let regularUser: String = "regular"
   static let regularUserPassword: String = "regular"
   
-  static let port: String = "2222"
-  static let dropBearPort: String = "2223"
-  static let host: String = "localhost"
+  static let port: String = firstEnv(["BLINK_TEST_PORT", "FIXTURE_SSH_PORT"], default: "2222")
+  static let dropBearPort: String = firstEnv(["BLINK_TEST_MOSH_PORT", "FIXTURE_MOSH_PORT"], default: "2223")
+  static let host: String = {
+#if targetEnvironment(simulator)
+    return firstEnv(["BLINK_TEST_HOST", "FIXTURE_SIM_HOST"], default: "localhost")
+#else
+    return firstEnv(["BLINK_TEST_HOST", "FIXTURE_DEVICE_HOST", "FIXTURE_SIM_HOST"], default: "localhost")
+#endif
+  }()
   static let incorrectIpHost: String = "256.8.4.2"
+
+  static let portForwardDestinationHost: String = firstEnv(["FIXTURE_PORTFORWARD_TARGET_HOST"], default: "localhost")
+  static let portForwardDestinationPort: Int = Int(firstEnv(["FIXTURE_PORTFORWARD_TARGET_PORT"], default: port)) ?? 2222
+  static let portForwardLocalPort: Int = Int(firstEnv(["FIXTURE_PORTFORWARD_LOCAL_PORT"], default: hashedPort(base: 18080))) ?? 18080
+  static let reverseForwardRemotePort: Int = Int(firstEnv(["FIXTURE_PORTFORWARD_REMOTE_PORT"], default: hashedPort(base: 19080))) ?? 19080
+  static let reverseForwardTargetHost: String = firstEnv(["FIXTURE_REVERSE_TARGET_HOST"], default: "127.0.0.1")
     
-  /// This one assumes another nonexistent machine on the same network, so it cannot be resolved.
-  static let timeoutHost = Credentials(user: "asdf", password: "zxcv", host: "192.168.1.155")
+  /// Use a TEST-NET address by default to avoid relying on LAN topology.
+  static let timeoutHost = Credentials(
+    user: "asdf",
+    password: "zxcv",
+    host: firstEnv(["BLINK_TEST_TIMEOUT_HOST", "FIXTURE_TIMEOUT_HOST"], default: "203.0.113.1")
+  )
   
   /// Incorrect credentials for a server to test failure
   static let wrongPassword = Credentials(user: Self.regularUser, password: "1234567890", host: Self.host)
