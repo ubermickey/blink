@@ -350,6 +350,32 @@ def create_ephemeral_simulator(repo_root: Path, env: dict[str, str], lane_name: 
     created_udid = create_proc.stdout.strip()
     if not created_udid:
         return None, f"xcrun simctl create returned no simulator id for {lane_name}."
+
+    boot_proc = subprocess.run(
+        ["xcrun", "simctl", "boot", created_udid],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if boot_proc.returncode not in (0,):
+        stderr = boot_proc.stderr.strip()
+        stdout = boot_proc.stdout.strip()
+        combined = "\n".join(part for part in (stderr, stdout) if part)
+        if "Unable to boot device in current state: Booted" not in combined:
+            delete_ephemeral_simulator(created_udid)
+            return None, combined or f"Unable to boot simulator clone for {lane_name}."
+
+    bootstatus_proc = subprocess.run(
+        ["xcrun", "simctl", "bootstatus", created_udid, "-b"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if bootstatus_proc.returncode != 0:
+        detail = (bootstatus_proc.stderr or bootstatus_proc.stdout).strip()
+        delete_ephemeral_simulator(created_udid)
+        return None, detail or f"Unable to wait for simulator clone boot status for {lane_name}."
+
     return created_udid, ""
 
 
