@@ -1,23 +1,32 @@
 #!/bin/sh
 
+set -eu
+
 cd "${0%/*}"
-echo $(pwd)
 
-if [[ -z "${OPENSSH_PORT}" ]]; then
-    OPENSSH_PORT=2222
+OPENSSH_PORT="${OPENSSH_PORT:-2222}"
+DROPBEAR_PORT="${DROPBEAR_PORT:-2223}"
+FIXTURE_HELPER_PORT="${FIXTURE_HELPER_PORT:-18080}"
+FIXTURE_RUN_ID="${FIXTURE_RUN_ID:-manual}"
+FIXTURE_LANE="${FIXTURE_LANE:-manual}"
+FIXTURE_REMOTE_ROOT="${FIXTURE_REMOTE_ROOT:-~/fps-runs/manual/manual}"
+IMAGE_NAME="${IMAGE_NAME:-blink-ssh-fixture:local}"
+CONTAINER_NAME="${CONTAINER_NAME:-blink-ssh-fixture}"
+
+RUN_DETACHED=""
+if [ "${DETACHED:-}" = "1" ]; then
+  RUN_DETACHED="-d"
 fi
 
-if [[ -z "${DROPBEAR_PORT}" ]]; then
-    DROPBEAR_PORT=2223
-fi
+docker build -t "${IMAGE_NAME}" .
+echo "Starting openssh server on port ${OPENSSH_PORT}, dropbear on ${DROPBEAR_PORT}, helper on ${FIXTURE_HELPER_PORT}"
 
-RUN_DETACHED="-d"
-
-if [[ -z "${DETACHED}" ]]; then
-    RUN_DETACHED=""
-fi
-
-docker build -t sshd .
-echo Starting openssh server on port $OPENSSH_PORT and dropbear on port $DROPBEAR_PORT
-# docker run $RUN_DETACHED --rm --init -v $(pwd)/copy_test:/home/no-password/copy_test --name sshd -p $OPENSSH_PORT:22 -p $DROPBEAR_PORT:23 sshd $@
-docker run $RUN_DETACHED --rm --init --name sshd -p $OPENSSH_PORT:22 -p $DROPBEAR_PORT:23 sshd $@
+docker run ${RUN_DETACHED} --rm --init \
+  --name "${CONTAINER_NAME}" \
+  -e "FIXTURE_RUN_ID=${FIXTURE_RUN_ID}" \
+  -e "FIXTURE_LANE=${FIXTURE_LANE}" \
+  -e "FIXTURE_REMOTE_ROOT=${FIXTURE_REMOTE_ROOT}" \
+  -e "FIXTURE_HELPER_PORT=${FIXTURE_HELPER_PORT}" \
+  -p "${OPENSSH_PORT}:22" \
+  -p "${DROPBEAR_PORT}:23" \
+  "${IMAGE_NAME}" "$@"

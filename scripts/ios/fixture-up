@@ -1,0 +1,368 @@
+#!/bin/bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${SCRIPT_DIR}/common.sh"
+source "${SCRIPT_DIR}/fixture/lib.sh"
+
+readonly GATE_ID="g0-toolchain"
+readonly GATE_DIR="$(artifact_dir "${GATE_ID}")"
+readonly IMAGE_NAME="${FIXTURE_IMAGE_NAME:-blink-ssh-fixture:local}"
+
+rebuild=0
+status_only=0
+stop_only=0
+command_suffix=""
+lane_arg=""
+run_id_arg=""
+ssh_port_arg=""
+mosh_port_arg=""
+remote_root_arg=""
+container_name_arg=""
+helper_port_arg=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --rebuild)
+      rebuild=1
+      shift
+      ;;
+    --status)
+      status_only=1
+      shift
+      ;;
+    --stop)
+      stop_only=1
+      shift
+      ;;
+    --lane)
+      [[ $# -ge 2 ]] || fail "--lane requires a value"
+      lane_arg="$2"
+      shift 2
+      ;;
+    --lane=*)
+      lane_arg="${1#*=}"
+      shift
+      ;;
+    --run-id)
+      [[ $# -ge 2 ]] || fail "--run-id requires a value"
+      run_id_arg="$2"
+      shift 2
+      ;;
+    --run-id=*)
+      run_id_arg="${1#*=}"
+      shift
+      ;;
+    --ssh-port)
+      [[ $# -ge 2 ]] || fail "--ssh-port requires a value"
+      ssh_port_arg="$2"
+      shift 2
+      ;;
+    --ssh-port=*)
+      ssh_port_arg="${1#*=}"
+      shift
+      ;;
+    --mosh-port)
+      [[ $# -ge 2 ]] || fail "--mosh-port requires a value"
+      mosh_port_arg="$2"
+      shift 2
+      ;;
+    --mosh-port=*)
+      mosh_port_arg="${1#*=}"
+      shift
+      ;;
+    --remote-root)
+      [[ $# -ge 2 ]] || fail "--remote-root requires a value"
+      remote_root_arg="$2"
+      shift 2
+      ;;
+    --remote-root=*)
+      remote_root_arg="${1#*=}"
+      shift
+      ;;
+    --container-name)
+      [[ $# -ge 2 ]] || fail "--container-name requires a value"
+      container_name_arg="$2"
+      shift 2
+      ;;
+    --container-name=*)
+      container_name_arg="${1#*=}"
+      shift
+      ;;
+    --helper-port)
+      [[ $# -ge 2 ]] || fail "--helper-port requires a value"
+      helper_port_arg="$2"
+      shift 2
+      ;;
+    --helper-port=*)
+      helper_port_arg="${1#*=}"
+      shift
+      ;;
+    *)
+      fail "Unknown argument: $1"
+      ;;
+  esac
+done
+
+if [[ -n "${lane_arg}" ]]; then
+  export FIXTURE_LANE="${lane_arg}"
+fi
+if [[ -n "${run_id_arg}" ]]; then
+  export FIXTURE_RUN_ID="${run_id_arg}"
+fi
+if [[ -n "${remote_root_arg}" ]]; then
+  export FIXTURE_REMOTE_ROOT="${remote_root_arg}"
+fi
+if [[ -n "${container_name_arg}" ]]; then
+  export FIXTURE_CONTAINER_NAME="${container_name_arg}"
+fi
+if [[ -n "${helper_port_arg}" ]]; then
+  export FIXTURE_HELPER_PORT="${helper_port_arg}"
+fi
+if [[ -n "${ssh_port_arg}" ]]; then
+  export FIXTURE_SSH_PORT="${ssh_port_arg}"
+fi
+if [[ -n "${mosh_port_arg}" ]]; then
+  export FIXTURE_MOSH_PORT="${mosh_port_arg}"
+fi
+
+readonly ISOLATION_MODE="$(fixture_isolation_enabled)"
+readonly FIXTURE_LANE="$(fixture_resolved_lane)"
+readonly FIXTURE_RUN_ID="$(fixture_resolved_run_id)"
+if [[ -z "${FIXTURE_REMOTE_ROOT:-}" ]]; then
+  export FIXTURE_REMOTE_ROOT="$(fixture_default_remote_root "${ISOLATION_MODE}" "${FIXTURE_RUN_ID}" "${FIXTURE_LANE}")"
+fi
+export FIXTURE_HELPER_PORT="${FIXTURE_HELPER_PORT:-18080}"
+
+if [[ -z "${FIXTURE_SSH_PORT:-}" && -z "${FIXTURE_MOSH_PORT:-}" ]]; then
+  if [[ "${ISOLATION_MODE}" == "1" ]]; then
+    read -r auto_ssh_port auto_mosh_port < <(fixture_pick_isolated_ports "${FIXTURE_RUN_ID}" "${FIXTURE_LANE}")
+    export FIXTURE_SSH_PORT="${auto_ssh_port}"
+    export FIXTURE_MOSH_PORT="${auto_mosh_port}"
+  else
+    export FIXTURE_SSH_PORT="$(fixture_ssh_port)"
+    export FIXTURE_MOSH_PORT="$(fixture_mosh_port)"
+  fi
+elif [[ -n "${FIXTURE_SSH_PORT:-}" && -z "${FIXTURE_MOSH_PORT:-}" ]]; then
+  export FIXTURE_MOSH_PORT="$((FIXTURE_SSH_PORT + 1))"
+elif [[ -z "${FIXTURE_SSH_PORT:-}" && -n "${FIXTURE_MOSH_PORT:-}" ]]; then
+  export FIXTURE_SSH_PORT="$((FIXTURE_MOSH_PORT - 1))"
+fi
+
+readonly CONTAINER_NAME="$(fixture_resolve_container_name "${ISOLATION_MODE}" "${FIXTURE_LANE}" "${FIXTURE_RUN_ID}")"
+
+require_command docker
+
+container_state() {
+  docker inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null || true
+}
+
+write_fixture_tree() {
+  docker exec \
+    -e FIXTURE_REMOTE_ROOT="${FIXTURE_REMOTE_ROOT}" \
+    -e FIXTURE_RUN_ID="${FIXTURE_RUN_ID}" \
+    -e FIXTURE_LANE="${FIXTURE_LANE}" \
+    "${CONTAINER_NAME}" sh -lc '
+    set -eu
+
+    resolve_root() {
+      home="$1"
+      spec="$2"
+      case "$spec" in
+        "~/"*) printf "%s/%s\n" "$home" "${spec#~/}" ;;
+        "/*") printf "%s\n" "$spec" ;;
+        *) printf "%s/%s\n" "$home" "$spec" ;;
+      esac
+    }
+
+    write_tree() {
+      root="$1"
+      mkdir -p "${root}/fps/docs"
+      mkdir -p "${root}/fps_changes/docs"
+      mkdir -p "${root}/fps_symlinks/dir"
+
+      printf "fixture root\n" > "${root}/fps/docs/readme.txt"
+      printf "fixture root 2\n" > "${root}/fps/docs/notes.txt"
+      printf "fixture root 3\n" > "${root}/fps/docs/delete-me.txt"
+      printf "image fixture\n" > "${root}/fps/image.jpg"
+      printf "root keep\n" > "${root}/fps/root-keep.txt"
+
+      printf "fixture changed\n" > "${root}/fps_changes/docs/readme.txt"
+      printf "new doc\n" > "${root}/fps_changes/docs/new.txt"
+      printf "new image\n" > "${root}/fps_changes/image.jpg"
+      printf "new root file\n" > "${root}/fps_changes/root-new.txt"
+
+      printf "symlink content\n" > "${root}/fps_symlinks/dir/test.txt"
+      rm -f "${root}/fps_symlinks/test_link"
+      ln -s "${root}/fps_symlinks/dir" "${root}/fps_symlinks/test_link"
+    }
+
+    for user in "no-password" "regular"; do
+      home="/home/${user}"
+      legacy_root="${home}/fps"
+      remote_root="$(resolve_root "${home}" "${FIXTURE_REMOTE_ROOT}")"
+
+      write_tree "${legacy_root}"
+      if [ "${remote_root}" != "${legacy_root}" ]; then
+        write_tree "${remote_root}"
+      fi
+
+      printf "%s\n" "${remote_root}" > "${home}/.blink-fixture-remote-root"
+      printf "%s\n" "${FIXTURE_RUN_ID}" > "${home}/.blink-fixture-run-id"
+      printf "%s\n" "${FIXTURE_LANE}" > "${home}/.blink-fixture-lane"
+
+      chown -R "${user}:${user}" "${legacy_root}"
+      if [ "${remote_root}" != "${legacy_root}" ]; then
+        chown -R "${user}:${user}" "${remote_root}"
+      fi
+      chown "${user}:${user}" \
+        "${home}/.blink-fixture-remote-root" \
+        "${home}/.blink-fixture-run-id" \
+        "${home}/.blink-fixture-lane"
+    done
+  '
+}
+
+validate_ports() {
+  python3 - "$(fixture_ssh_port)" "$(fixture_mosh_port)" <<'PY'
+import socket
+import sys
+
+for raw_port in sys.argv[1:]:
+    port = int(raw_port)
+    with socket.create_connection(("127.0.0.1", port), timeout=2):
+        pass
+PY
+}
+
+ensure_host_ports_free() {
+  python3 - "$(fixture_ssh_port)" "$(fixture_mosh_port)" <<'PY'
+import socket
+import sys
+
+for raw_port in sys.argv[1:]:
+    port = int(raw_port)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(("127.0.0.1", port))
+    except OSError as exc:
+        print(f"Fixture host port {port} is unavailable: {exc}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        sock.close()
+PY
+}
+
+validate_fixture() {
+  docker exec \
+    -e FIXTURE_REMOTE_ROOT="${FIXTURE_REMOTE_ROOT}" \
+    -e FIXTURE_RUN_ID="${FIXTURE_RUN_ID}" \
+    -e FIXTURE_LANE="${FIXTURE_LANE}" \
+    -e FIXTURE_HELPER_PORT="${FIXTURE_HELPER_PORT}" \
+    "${CONTAINER_NAME}" sh -lc '
+    set -eu
+    resolve_root() {
+      home="$1"
+      spec="$2"
+      case "$spec" in
+        "~/"*) printf "%s/%s\n" "$home" "${spec#~/}" ;;
+        "/*") printf "%s\n" "$spec" ;;
+        *) printf "%s/%s\n" "$home" "$spec" ;;
+      esac
+    }
+
+    test -d /home/no-password/fps/fps/docs
+    test -f /home/no-password/fps/fps/image.jpg
+    test -d /home/no-password/fps/fps_changes/docs
+    test -L /home/no-password/fps/fps_symlinks/test_link
+    remote_root="$(resolve_root /home/no-password "${FIXTURE_REMOTE_ROOT}")"
+    if [ "${remote_root}" != "/home/no-password/fps" ]; then
+      test -d "${remote_root}/fps/docs"
+      test -L "${remote_root}/fps_symlinks/test_link"
+    fi
+    test "$(cat /home/no-password/.blink-fixture-run-id)" = "${FIXTURE_RUN_ID}"
+    test "$(cat /home/no-password/.blink-fixture-lane)" = "${FIXTURE_LANE}"
+    curl --fail --silent --show-error "http://127.0.0.1:${FIXTURE_HELPER_PORT}/healthz" >/dev/null
+    id no-password >/dev/null
+    id regular >/dev/null
+  '
+}
+
+if [[ "${stop_only}" -eq 1 ]]; then
+  if [[ "$(container_state)" == "true" ]]; then
+    docker rm -f "${CONTAINER_NAME}" >/dev/null
+    log "Stopped ${CONTAINER_NAME}"
+  else
+    log "${CONTAINER_NAME} is not running"
+  fi
+  exit 0
+fi
+
+start_epoch="$(python3 - <<'PY'
+import time
+print(time.time())
+PY
+)"
+
+if [[ "$(container_state)" == "true" && "${rebuild}" -eq 0 ]]; then
+  log "${CONTAINER_NAME} is already running"
+else
+  if [[ "${rebuild}" -eq 1 && "$(container_state)" == "true" ]]; then
+    docker rm -f "${CONTAINER_NAME}" >/dev/null
+  fi
+  if [[ "${rebuild}" -eq 1 || -z "$(docker image ls -q "${IMAGE_NAME}" 2>/dev/null)" ]]; then
+    command_suffix=" --rebuild"
+    log "Building ${IMAGE_NAME} from SSHTests/docker"
+    run_logged "${GATE_DIR}/fixture-build.log" docker build -t "${IMAGE_NAME}" "${REPO_ROOT}/SSHTests/docker"
+  fi
+  if [[ "$(container_state)" != "true" ]]; then
+    ensure_host_ports_free
+    log "Starting ${CONTAINER_NAME}"
+    docker run \
+      --detach \
+      --rm \
+      --init \
+      --name "${CONTAINER_NAME}" \
+      --label "com.blink.fixture=true" \
+      --label "com.blink.fixture.run_id=${FIXTURE_RUN_ID}" \
+      --label "com.blink.fixture.lane=${FIXTURE_LANE}" \
+      -e "FIXTURE_RUN_ID=${FIXTURE_RUN_ID}" \
+      -e "FIXTURE_LANE=${FIXTURE_LANE}" \
+      -e "FIXTURE_REMOTE_ROOT=${FIXTURE_REMOTE_ROOT}" \
+      -e "FIXTURE_HELPER_PORT=${FIXTURE_HELPER_PORT}" \
+      -p "$(fixture_ssh_port)":22 \
+      -p "$(fixture_mosh_port)":23 \
+      "${IMAGE_NAME}" > "${GATE_DIR}/container-id.txt"
+  fi
+fi
+
+write_fixture_tree
+validate_ports
+validate_fixture
+
+duration="$(python3 - "${start_epoch}" <<'PY'
+import sys
+import time
+print(f"{time.time() - float(sys.argv[1]):.2f}")
+PY
+)"
+
+report_gate \
+  "G0 Toolchain / Fixture" \
+  "pass" \
+  "scripts/ios/fixture-up${command_suffix}" \
+  "${duration}" \
+  "Validated Docker-backed SSH/SFTP fixture on localhost with ports $(fixture_ssh_port)/$(fixture_mosh_port); lane=${FIXTURE_LANE}; run=${FIXTURE_RUN_ID}; remote_root=${FIXTURE_REMOTE_ROOT}." \
+  "${GATE_DIR}/fixture-build.log,${GATE_DIR}/container-id.txt" \
+  "false" >/dev/null
+
+if [[ "${status_only}" -eq 1 ]]; then
+  docker ps --filter "name=${CONTAINER_NAME}"
+else
+  log "Fixture ready on localhost:$(fixture_ssh_port) and localhost:$(fixture_mosh_port)"
+  log "Fixture helper service is running in-container on 127.0.0.1:${FIXTURE_HELPER_PORT}"
+  log "Fixture lane=${FIXTURE_LANE} run_id=${FIXTURE_RUN_ID} remote_root=${FIXTURE_REMOTE_ROOT} container=${CONTAINER_NAME}"
+  log "Device host should use $(fixture_device_host)"
+fi
