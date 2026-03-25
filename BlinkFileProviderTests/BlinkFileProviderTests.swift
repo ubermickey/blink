@@ -527,7 +527,7 @@ final class BlinkFileProviderTests: XCTestCase {
   func testSymlinkOperations() throws {
     // Browse the structure.
     self.continueAfterFailure = false
-    let fp = try fileProviderExtension(rootPath: "sftp:localhost:~/fps/fps_symlinks")
+    let fp = try fileProviderExtension(rootPath: Self.fixturePath("fps_symlinks"))
     let request = NSFileProviderRequest()
 
     let expectEnumerateRoot = self.expectation(description: "Root enumerated")
@@ -722,8 +722,12 @@ final class BlinkFileProviderTests: XCTestCase {
 }
 
 extension BlinkFileProviderTests {
-  static let testPath = "sftp:localhost:~/fps/fps"
-  static let testPathChanges = "sftp:localhost:~/fps/fps_changes"
+  static var testPath: String { fixturePath("fps") }
+  static var testPathChanges: String { fixturePath("fps_changes") }
+
+  static func fixturePath(_ relativePath: String) -> String {
+    "sftp:\(FileProviderFixtureEnvironment.host):\(FileProviderFixtureEnvironment.joinedRoot(with: relativePath))"
+  }
 
   func testsLogger(_ component: String) -> BlinkLogger {
     BlinkLogger(component, handlers: [BlinkLoggingHandlers.print])
@@ -747,6 +751,43 @@ extension BlinkFileProviderTests {
     let location = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
 
     return FileProviderReplicatedExtension(connection: connection, workingSet: workingSet, temporaryDirectoryURL: location)
+  }
+}
+
+private enum FileProviderFixtureEnvironment {
+  private static let env = ProcessInfo.processInfo.environment
+
+  static var host: String {
+    if let configured = read("FIXTURE_DEVICE_HOST") {
+      return configured
+    }
+    if let configured = read("FIXTURE_SIM_HOST") {
+      return configured
+    }
+    return "localhost"
+  }
+
+  static var remoteRoot: String {
+    if let configured = read("FIXTURE_REMOTE_ROOT") {
+      return configured
+    }
+    if let runID = read("FIXTURE_RUN_ID") {
+      return "~/fps/\(runID)"
+    }
+    return "~/fps"
+  }
+
+  static func joinedRoot(with relativePath: String) -> String {
+    let normalizedRoot = remoteRoot.hasSuffix("/") ? String(remoteRoot.dropLast()) : remoteRoot
+    let normalizedRelative = relativePath.hasPrefix("/") ? String(relativePath.dropFirst()) : relativePath
+    return "\(normalizedRoot)/\(normalizedRelative)"
+  }
+
+  private static func read(_ key: String) -> String? {
+    guard let value = env[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+      return nil
+    }
+    return value
   }
 }
 

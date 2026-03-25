@@ -7,16 +7,17 @@ import Network
 
 final class websocketTests: XCTestCase {
     func testWebSocket() throws {
-      let message = "Hello World"
       let expectation = XCTestExpectation(description: "Message received")
+      let port = NWEndpoint.Port(rawValue: 19100)!
 
       // Start webserver. Wait for it to be ready. We could create a proper ready flag.
-      let server = try WebSocketServer(listenOn: 8000, tls: true)
+      let server = try WebSocketServer(listenOn: port, tls: false)
+      _ = server
       RunLoop.current.run(until: Date.init(timeIntervalSinceNow: 1))
-      wait(for: [expectation], timeout: 10005.0)
 
-      let task = URLSession.shared.webSocketTask(with: URL(string: "ws://localhost:8000")!)
+      let task = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port.rawValue)")!)
       task.resume()
+      defer { task.cancel(with: .goingAway, reason: nil) }
 
       task.sendPing { error in
         if let error = error {

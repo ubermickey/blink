@@ -1,0 +1,11 @@
+#!/bin/bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${SCRIPT_DIR}/common.sh"
+
+[[ -x "${SCRIPT_DIR}/orchestrate-v5" ]] || fail "scripts/ios/orchestrate-v5 is missing or not executable."
+
+log "Running verify-fast through orchestrate-v5"
+exec "${SCRIPT_DIR}/orchestrate-v5" --mode fast "$@"

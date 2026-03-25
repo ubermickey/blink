@@ -1,0 +1,103 @@
+#!/bin/bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${SCRIPT_DIR}/common.sh"
+
+use_orchestrator=1
+allow_no_fixture=0
+skip_fixture=0
+skip_ui_tests=0
+ci_mode=0
+device_id=""
+report_dir=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-orchestrate) use_orchestrator=0 ;;
+    --allow-no-fixture) allow_no_fixture=1 ;;
+    --skip-fixture) skip_fixture=1 ;;
+    --skip-ui-tests) skip_ui_tests=1 ;;
+    --ci) ci_mode=1 ;;
+    --device-id)
+      shift
+      [[ $# -gt 0 ]] || fail "Missing value for --device-id"
+      device_id="$1"
+      ;;
+    --report-dir)
+      shift
+      [[ $# -gt 0 ]] || fail "Missing value for --report-dir"
+      report_dir="$1"
+      ;;
+    *)
+      fail "Unknown argument: $1"
+      ;;
+  esac
+  shift
+done
+
+if [[ -n "${report_dir}" ]]; then
+  export BLINK_COMPLETION_LOOP_DIR="${report_dir}"
+fi
+
+if [[ -n "${device_id}" ]]; then
+  export DEVICE_ID="${device_id}"
+fi
+
+ensure_report
+
+log "Running verify-full"
+orchestrator="${SCRIPT_DIR}/orchestrate-v5"
+if [[ "${use_orchestrator}" -eq 1 && -x "${orchestrator}" ]]; then
+  cmd=( "${orchestrator}" --mode full )
+  [[ "${allow_no_fixture}" -eq 1 ]] && cmd+=( --allow-no-fixture )
+  [[ "${skip_fixture}" -eq 1 ]] && cmd+=( --skip-fixture )
+  [[ "${skip_ui_tests}" -eq 1 ]] && cmd+=( --skip-ui-tests )
+  [[ "${ci_mode}" -eq 1 ]] && cmd+=( --ci )
+  [[ -n "${device_id}" ]] && cmd+=( --device-id "${device_id}" )
+  [[ -n "${report_dir}" ]] && cmd+=( --report-dir "${report_dir}" )
+  log "Delegating verify-full to orchestrate-v5 (mode=full)"
+  "${cmd[@]}"
+  log "verify-full completed via orchestrate-v5. Artifacts: ${BLINK_COMPLETION_LOOP_DIR}"
+  exit 0
+fi
+
+warn "orchestrate-v5 unavailable or disabled; using fallback verify-full flow."
+
+fast_args=()
+[[ "${allow_no_fixture}" -eq 1 ]] && fast_args+=( --allow-no-fixture )
+[[ "${skip_fixture}" -eq 1 ]] && fast_args+=( --skip-fixture )
+[[ "${skip_ui_tests}" -eq 1 ]] && fast_args+=( --skip-ui-tests )
+[[ "${ci_mode}" -eq 1 ]] && fast_args+=( --ci )
+
+"${SCRIPT_DIR}/verify-fast" "${fast_args[@]}"
+"${SCRIPT_DIR}/deploy-device"
+
+g4_dir="$(artifact_dir "g4-domain-gates")"
+cat > "${g4_dir}/notes.txt" <<EOF
+verify-full fallback completed fast loop + device deploy/runtime smoke.
+
+G4 automation is not fully available in fallback mode, so domain gates are staged as manual:
+- SSH, Mosh, SCP/SFTP, File Provider, and port-forward domain verification
+- BlinkCode and free-build runtime domain verification
+
+Run scripts/ios/acceptance to stage and/or complete G8 evidence.
+EOF
+
+report_gate \
+  "G4 Domain Gates" \
+  "pending_manual" \
+  "scripts/ios/verify-full (fallback)" \
+  "0" \
+  "Fallback verify-full staged G4 as manual pending domain validation." \
+  "${g4_dir}/notes.txt" \
+  "true" \
+  "g4_manual_stage" \
+  "fixture" \
+  "gpt_5_3_codex__manual_release_wrappers" \
+  "manual" >/dev/null
+
+"${SCRIPT_DIR}/acceptance" --stage-only --source "scripts/ios/verify-full (fallback)"
+
+log "verify-full completed. Artifacts: ${BLINK_COMPLETION_LOOP_DIR}"

@@ -31,36 +31,62 @@
 
 
 import XCTest
+import Network
 
 @testable import BlinkCode
 
 var OperationId: UInt32 = 0
-let ServiceURL = URL(string: "ws://localhost:8000")!
 
 class BlinkCodeTests: XCTestCase {
   var service: CodeFileSystemService? = nil
+  var serviceURL: URL!
+  var fixtureRoot: URL!
+  var sourceFile: URL!
+  var sourceData: Data!
+  static var nextPort: UInt16 = 19015
+
+  private static func reservePort() -> UInt16 {
+    defer { nextPort += 1 }
+    return nextPort
+  }
+
+  private func localURI(_ url: URL) -> URI {
+    try! URI(string: "blinkfs:\(url.path)")
+  }
 
   override func setUpWithError() throws {
-    // Put setup code here. This method is called before the invocation of each test method in the class.
     OperationId = 0
-    service = try CodeFileSystemService(listenOn: 10015, tls: false)
+    fixtureRoot = FileManager.default.temporaryDirectory
+      .appendingPathComponent("BlinkCodeTests-\(UUID().uuidString)", isDirectory: true)
+    sourceFile = fixtureRoot.appendingPathComponent("build.token")
+    sourceData = Data("blink-code".utf8)
+    try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
+    try sourceData.write(to: sourceFile)
+
+    let port = Self.reservePort()
+    serviceURL = URL(string: "ws://127.0.0.1:\(port)")!
+    service = try CodeFileSystemService(listenOn: NWEndpoint.Port(rawValue: port)!,
+                                        tls: false,
+                                        finished: { _ in })
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
   }
 
   override func tearDownWithError() throws {
-    // Put teardown code here. This method is called after the invocation of each test method in the class.
+    service = nil
+    try? FileManager.default.removeItem(at: fixtureRoot)
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
   }
 
   func testVSCode() throws {
-    //throw XCTSkip("Comment if running VSCode integration")
-    let expectation = expectation(description: "Holding up for VSCode")
-    wait(for: [expectation], timeout: 50000)
+    throw XCTSkip("VSCode integration is not part of verify-fast.")
   }
   
   func testStat() throws {
-    let task = URLSession.shared.webSocketTask(with: ServiceURL)
+    let task = URLSession.shared.webSocketTask(with: serviceURL)
     task.resume()
+    defer { task.cancel(with: .goingAway, reason: nil) }
 
-    let req = StatFileSystemRequest(uri: URI("blink-fs:/Users/carloscabanero/build.token"))
+    let req = StatFileSystemRequest(uri: localURI(sourceFile))
     
     let (response, responseContent) = try task.sendCodeFileSystemRequest(req,
                                                                          test: self)
@@ -77,10 +103,11 @@ class BlinkCodeTests: XCTestCase {
   }
 
   func testReadDirectory() throws {
-    let task = URLSession.shared.webSocketTask(with: ServiceURL)
+    let task = URLSession.shared.webSocketTask(with: serviceURL)
     task.resume()
+    defer { task.cancel(with: .goingAway, reason: nil) }
 
-    let req = ReadDirectoryFileSystemRequest(uri: URI("blink-fs:local:/Users/carloscabanero"))
+    let req = ReadDirectoryFileSystemRequest(uri: localURI(fixtureRoot))
     
     let (response, responseContent) = try task.sendCodeFileSystemRequest(req, test: self)
     
@@ -93,15 +120,19 @@ class BlinkCodeTests: XCTestCase {
       return
     }
     print(items)
-    XCTAssertTrue(items.count > 0)
+    XCTAssertTrue(items.contains { $0.name == sourceFile.lastPathComponent })
   }
 
   // TODO Test. Fail if no create. Create file. Overwrite file. Fail if overwrite.
   func testWriteFile() throws {
-    let task = URLSession.shared.webSocketTask(with: ServiceURL)
-    task.resume()
+    let targetFile = fixtureRoot.appendingPathComponent("createtest")
+    FileManager.default.createFile(atPath: targetFile.path, contents: Data(), attributes: nil)
 
-    let uri = URI("blink-fs:local:/Users/carloscabanero/createtest")
+    let task = URLSession.shared.webSocketTask(with: serviceURL)
+    task.resume()
+    defer { task.cancel(with: .goingAway, reason: nil) }
+
+    let uri = localURI(targetFile)
     let filePath = uri.rootPath.filesAtPath
     let req = WriteFileSystemRequest(uri: uri, options: .init(overwrite: true, create: false))
     let content = "Hello world".data(using: .utf8)
@@ -118,10 +149,11 @@ class BlinkCodeTests: XCTestCase {
 
   // TODO Try to recreate and check error
   func testCreateDirectory() throws {
-    let task = URLSession.shared.webSocketTask(with: ServiceURL)
+    let task = URLSession.shared.webSocketTask(with: serviceURL)
     task.resume()
+    defer { task.cancel(with: .goingAway, reason: nil) }
 
-    let uri = URI("blink-fs:local:/Users/carloscabanero/newdir")
+    let uri = localURI(fixtureRoot.appendingPathComponent("newdir"))
     let path = uri.rootPath.filesAtPath
     let req  = CreateDirectoryFileSystemRequest(uri: uri)
 
@@ -138,12 +170,18 @@ class BlinkCodeTests: XCTestCase {
   }
 
   func testRename() throws {
-    let task = URLSession.shared.webSocketTask(with: ServiceURL)
-    task.resume()
+    try FileManager.default.createDirectory(
+      at: fixtureRoot.appendingPathComponent("newdir"),
+      withIntermediateDirectories: true
+    )
 
-    let uri     = URI("blink-fs:local:/Users/carloscabanero/newdir")
+    let task = URLSession.shared.webSocketTask(with: serviceURL)
+    task.resume()
+    defer { task.cancel(with: .goingAway, reason: nil) }
+
+    let uri     = localURI(fixtureRoot.appendingPathComponent("newdir"))
     let path    = uri.rootPath.filesAtPath
-    let newUri  = URI("blink-fs:local:/Users/carloscabanero/newpathdir")
+    let newUri  = localURI(fixtureRoot.appendingPathComponent("newpathdir"))
     let newPath = newUri.rootPath.filesAtPath
     let req  = RenameFileSystemRequest(oldUri: uri,
                                        newUri: newUri,
@@ -157,16 +195,23 @@ class BlinkCodeTests: XCTestCase {
     XCTAssertTrue(responseContent == nil)
 
     var isDir: ObjCBool = false
+    XCTAssertFalse(FileManager.default.fileExists(atPath: path))
     let exists = FileManager.default.fileExists(atPath: newPath, isDirectory: &isDir)
     XCTAssertTrue(exists)
     XCTAssertTrue(isDir.boolValue)
   }
 
   func testDelete() throws {
-    let task = URLSession.shared.webSocketTask(with: ServiceURL)
-    task.resume()
+    try FileManager.default.createDirectory(
+      at: fixtureRoot.appendingPathComponent("newdir"),
+      withIntermediateDirectories: true
+    )
 
-    let uri = URI("blink-fs:local:/Users/carloscabanero/newdir")
+    let task = URLSession.shared.webSocketTask(with: serviceURL)
+    task.resume()
+    defer { task.cancel(with: .goingAway, reason: nil) }
+
+    let uri = localURI(fixtureRoot.appendingPathComponent("newdir"))
     let path = uri.rootPath.filesAtPath
     let req  = DeleteFileSystemRequest(uri: uri,
                                        options: .init(recursive: true))

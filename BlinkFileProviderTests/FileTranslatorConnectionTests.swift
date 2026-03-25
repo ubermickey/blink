@@ -258,12 +258,14 @@ final class FileTranslatorFactoryTests: XCTestCase {
 }
 
 class TestFactoryConfigurator: FileTranslatorFactory.Configurator {
-  static let LocalTestPath = "sftp:localhost:~/fps"
+  static var LocalTestPath: String {
+    FixtureEnvironment.sftpPath(host: FixtureEnvironment.host, root: FixtureEnvironment.remoteRoot)
+  }
 
   func sshConfig(host title: String) throws -> (String, SSH.SSHClientConfig) {
     let config = SSHClientConfig(
-      user: "nopass",
-      port: "2222"
+      user: "no-password",
+      port: FixtureEnvironment.sshPort
     )
 
     return (title, config)
@@ -271,26 +273,71 @@ class TestFactoryConfigurator: FileTranslatorFactory.Configurator {
 }
 
 class TestProxyFactoryConfigurator: FileTranslatorFactory.Configurator {
-  static let ProxyTestPath = "sftp:l:~/fps"
+  static var ProxyTestPath: String {
+    FixtureEnvironment.sftpPath(host: "l", root: FixtureEnvironment.remoteRoot)
+  }
 
   struct TestProxyFactoryError: Error {}
   
   func sshConfig(host title: String) throws -> (String, SSH.SSHClientConfig) {
     if title == "l" {
       let config = SSHClientConfig(
-        user: "nopass",
-        port: "2222",
+        user: "no-password",
+        port: FixtureEnvironment.sshPort,
         proxyJump: "local"
       )
-      return ("localhost", config)
+      return (FixtureEnvironment.host, config)
     } else if title == "local" {
       let config = SSHClientConfig(
-        user: "nopass",
-        port: "2222"
+        user: "no-password",
+        port: FixtureEnvironment.sshPort
       )
-      return ("localhost", config)
+      return (FixtureEnvironment.host, config)
     }
 
     throw TestProxyFactoryError()
+  }
+}
+
+private enum FixtureEnvironment {
+  private static let env = ProcessInfo.processInfo.environment
+
+  static var host: String {
+    read("FIXTURE_DEVICE_HOST", fallbackKey: "FIXTURE_SIM_HOST", defaultValue: "localhost")
+  }
+
+  static var sshPort: String {
+    read("FIXTURE_SSH_PORT", defaultValue: "2222")
+  }
+
+  static var remoteRoot: String {
+    if let configured = sanitized("FIXTURE_REMOTE_ROOT") {
+      return configured
+    }
+    if let runID = sanitized("FIXTURE_RUN_ID") {
+      return "~/fps/\(runID)"
+    }
+    return "~/fps"
+  }
+
+  static func sftpPath(host: String, root: String) -> String {
+    "sftp:\(host):\(root)"
+  }
+
+  private static func read(_ key: String, fallbackKey: String? = nil, defaultValue: String) -> String {
+    if let value = sanitized(key) {
+      return value
+    }
+    if let fallbackKey, let value = sanitized(fallbackKey) {
+      return value
+    }
+    return defaultValue
+  }
+
+  private static func sanitized(_ key: String) -> String? {
+    guard let raw = env[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+      return nil
+    }
+    return raw
   }
 }

@@ -71,6 +71,15 @@ PY
 require_command xcodebuild
 require_command python3
 
+find_xctestrun() {
+  local derived_data_dir="$1"
+  local products_dir="${derived_data_dir}/Build/Products"
+  if [[ ! -d "${products_dir}" ]]; then
+    return 0
+  fi
+  find "${products_dir}" -maxdepth 1 -type f -name "*.xctestrun" 2>/dev/null | sort | head -n 1
+}
+
 simulator_id="${SIMULATOR_ID:-}"
 if [[ -z "${simulator_id}" ]]; then
   simulator_id="$(resolve_simulator_id)" || fail "Unable to resolve an iOS simulator destination."
@@ -94,11 +103,15 @@ if ! run_logged "${GATE_DIR}/build-for-testing.log" \
   fail "Lane ${LANE_NAME} failed"
 fi
 
+xctestrun_path="$(find_xctestrun "${DERIVED_DATA_DIR}")"
+[[ -n "${xctestrun_path}" ]] || fail "Unable to locate .xctestrun in ${DERIVED_DATA_DIR}"
+
 cat > "${OUTPUTS_FILE}" <<EOF
 LANE=${LANE_NAME}
 GATE=${GATE_NAME}
 SIMULATOR_ID=${simulator_id}
 DERIVED_DATA_PATH=${DERIVED_DATA_DIR}
+XCTESTRUN_PATH=${xctestrun_path}
 COVERAGE_MODE=full
 EOF
 

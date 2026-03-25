@@ -56,10 +56,12 @@ NSString *__iCloudsDriveDocumentsPath = nil;
 {
   if (__documentsPath == nil) {
     __documentsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+#if !TARGET_OS_SIMULATOR
     // Linked and resolved files has prefix /private
     if (![__documentsPath hasPrefix:@"/private"]) {
       __documentsPath = [@"/private" stringByAppendingString:__documentsPath];
     }
+#endif
   }
   return __documentsPath;
 }

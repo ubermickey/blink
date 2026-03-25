@@ -1,0 +1,144 @@
+#!/bin/bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${SCRIPT_DIR}/common.sh"
+
+ensure_report
+
+readonly GATE_DIR="$(artifact_dir "g3-runtime-smoke")"
+readonly DERIVED_DATA_DIR="${BLINK_COMPLETION_LOOP_DIR}/DerivedData-device"
+readonly METADATA_FILE="${GATE_DIR}/lane-metadata.json"
+
+warm_device_connection() {
+  local device="$1"
+  xcrun devicectl device info details --device "${device}" >/dev/null 2>&1 || true
+}
+
+duration_since_start() {
+  python3 - "${start_epoch}" <<'PY'
+import sys
+import time
+print(f"{time.time() - float(sys.argv[1]):.2f}")
+PY
+}
+
+write_lane_metadata() {
+  local status="$1"
+  local notes="$2"
+  local requires_manual="$3"
+  local artifacts="$4"
+  python3 - "${METADATA_FILE}" "${status}" "$(duration_since_start)" "${notes}" "${requires_manual}" "${artifacts}" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+metadata_path, status, duration, notes, requires_manual, artifacts = sys.argv[1:]
+payload = {
+    "lane": "g3_runtime_smoke",
+    "gate": "G3 Runtime Smoke",
+    "status": status,
+    "command": "./scripts/ios/deploy-device",
+    "duration_sec": float(duration),
+    "notes": notes,
+    "artifacts": [item for item in artifacts.split(",") if item],
+    "resource_group": "device_ipad",
+    "worker": "gpt_5_3_codex__orchestrator_core",
+    "coverage_mode": "full",
+    "requires_fixture": False,
+    "requires_device": True,
+    "requires_manual": requires_manual.lower() in {"1", "true", "yes"},
+}
+path = Path(metadata_path)
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+PY
+}
+
+report_failure() {
+  local notes="$1"
+  local requires_manual="$2"
+  local artifacts="${GATE_DIR}/device-build.log,${GATE_DIR}/device-install.log,${GATE_DIR}/device-launch.log"
+  write_lane_metadata "fail" "${notes}" "${requires_manual}" "${artifacts}"
+  if [[ "${BLINK_V5_ORCHESTRATED:-0}" != "1" ]]; then
+    report_gate \
+      "G3 Runtime Smoke" \
+      "fail" \
+      "xcodebuild build && devicectl install && devicectl launch" \
+      "$(duration_since_start)" \
+      "${notes}" \
+      "${artifacts}" \
+      "${requires_manual}" >/dev/null
+  fi
+}
+
+start_epoch="$(python3 - <<'PY'
+import time
+print(time.time())
+PY
+)"
+
+device_id="$(resolve_device_id)"
+bundle="$(bundle_id)"
+[[ -n "${bundle}" ]] || fail "Unable to resolve BUNDLE_ID from developer_setup.xcconfig"
+
+log "Refreshing connection state for ${device_id}"
+warm_device_connection "${device_id}"
+
+log "Building Blink for device ${device_id}"
+if ! run_logged "${GATE_DIR}/device-build.log" \
+  xcodebuild \
+  -project "${REPO_ROOT}/Blink.xcodeproj" \
+  -scheme Blink \
+  -configuration Debug \
+  -destination "id=${device_id}" \
+  -allowProvisioningUpdates \
+  -derivedDataPath "${DERIVED_DATA_DIR}" \
+  build; then
+  report_failure "Device build failed for ${device_id}." "false"
+  fail "Device build failed for ${device_id}"
+fi
+
+app_path="${DERIVED_DATA_DIR}/Build/Products/Debug-iphoneos/Blink.app"
+[[ -d "${app_path}" ]] || fail "Built app not found at ${app_path}"
+
+log "Refreshing connection state for ${device_id}"
+warm_device_connection "${device_id}"
+
+log "Installing ${bundle}"
+if ! run_logged "${GATE_DIR}/device-install.log" \
+  xcrun devicectl device install app --device "${device_id}" "${app_path}"; then
+  report_failure "Device install failed for ${bundle} on ${device_id}." "false"
+  fail "Device install failed for ${bundle} on ${device_id}"
+fi
+
+log "Refreshing connection state for ${device_id}"
+warm_device_connection "${device_id}"
+
+log "Launching ${bundle}"
+if ! run_logged "${GATE_DIR}/device-launch.log" \
+  xcrun devicectl device process launch --device "${device_id}" "${bundle}"; then
+  launch_note="Launch failed for ${bundle} on ${device_id}."
+  if grep -q "could not be, unlocked" "${GATE_DIR}/device-launch.log"; then
+    launch_note="${launch_note} Unlock the device and rerun deploy-device."
+  fi
+  report_failure "${launch_note}" "true"
+  fail "${launch_note}"
+fi
+
+artifacts="${GATE_DIR}/device-build.log,${GATE_DIR}/device-install.log,${GATE_DIR}/device-launch.log"
+notes="Installed and launched ${bundle} on ${device_id}. Background/resume remains part of manual acceptance."
+write_lane_metadata "pass" "${notes}" "false" "${artifacts}"
+if [[ "${BLINK_V5_ORCHESTRATED:-0}" != "1" ]]; then
+  report_gate \
+    "G3 Runtime Smoke" \
+    "pass" \
+    "xcodebuild build && devicectl install && devicectl launch" \
+    "$(duration_since_start)" \
+    "${notes}" \
+    "${artifacts}" \
+    "false" >/dev/null
+fi
+
+log "Device deploy complete. Artifacts: ${GATE_DIR}"

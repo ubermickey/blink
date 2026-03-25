@@ -30,17 +30,36 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 import XCTest
+import Combine
 
 @testable import BlinkFiles
 
 class CopyFilesTests: XCTestCase {
+  var cancellables: [AnyCancellable] = []
+  var fixtureRoot: URL!
+  var sourceDir: URL!
+  var sourceFile: URL!
+  var destinationDir: URL!
+  var sourceFileData: Data!
   
   override func setUpWithError() throws {
-    // Put setup code here. This method is called before the invocation of each test method in the class.
+    fixtureRoot = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CopyFilesTests-\(UUID().uuidString)", isDirectory: true)
+    sourceDir = fixtureRoot.appendingPathComponent("source", isDirectory: true)
+    destinationDir = fixtureRoot.appendingPathComponent("destination", isDirectory: true)
+    sourceFile = sourceDir.appendingPathComponent("payload.txt")
+    sourceFileData = Data(repeating: 0x5a, count: 32 * 1024)
+
+    try FileManager.default.createDirectory(at: sourceDir, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: destinationDir, withIntermediateDirectories: true)
+    try sourceFileData.write(to: sourceFile)
   }
   
   override func tearDownWithError() throws {
-    // Put teardown code here. This method is called after the invocation of each test method in the class.
+    cancellables.removeAll()
+    if let fixtureRoot {
+      try? FileManager.default.removeItem(at: fixtureRoot)
+    }
   }
   
   func testCopyFileFrom() throws {
@@ -48,8 +67,8 @@ class CopyFilesTests: XCTestCase {
     var totalWritten: UInt64 = 0
     let expectFileCopied = self.expectation(description: "File Copied")
     
-    var c = Local().cloneWalkTo("/Users/carloscabanero/tmp").flatMap { destDir -> CopyProgressInfoPublisher in
-      return Local().cloneWalkTo("/Users/carloscabanero/iPad_Pro_Spring_2021_15.0.ipsw")
+    Local().cloneWalkTo(destinationDir.path).flatMap { destDir -> CopyProgressInfoPublisher in
+      return Local().cloneWalkTo(self.sourceFile.path)
         .flatMap { destDir.copy(from: [$0]) }
         .eraseToAnyPublisher()
     }.sink(receiveCompletion: { completion in
@@ -61,20 +80,22 @@ class CopyFilesTests: XCTestCase {
       }
     }, receiveValue: { report in
       totalWritten += report.written
-    })
+    }).store(in: &cancellables)
     
     
     wait(for: [expectFileCopied], timeout: 1000)
     
-    XCTAssertTrue(totalWritten == 6191846351)
+    let copiedFile = destinationDir.appendingPathComponent(sourceFile.lastPathComponent)
+    XCTAssertEqual(totalWritten, UInt64(sourceFileData.count))
+    XCTAssertEqual(try Data(contentsOf: copiedFile), sourceFileData)
   }
   
   func testCopyFrom() throws {
     self.continueAfterFailure = false
     let expectStructureCopied = self.expectation(description: "Structure Copied")
     
-    var c = Local().cloneWalkTo("/tmp/test").flatMap { destDir -> CopyProgressInfoPublisher in
-      return Local().cloneWalkTo("/Users/carloscabanero/tmp")
+    Local().cloneWalkTo(destinationDir.path).flatMap { destDir -> CopyProgressInfoPublisher in
+      return Local().cloneWalkTo(self.sourceDir.path)
         .flatMap { destDir.copy(from: [$0]) }
         .eraseToAnyPublisher()
     }.sink(receiveCompletion: { completion in
@@ -86,8 +107,15 @@ class CopyFilesTests: XCTestCase {
       }
     }, receiveValue: { report in
       print("\(report.name) - \(report.written) - \(report.size)")
-    })
+    }).store(in: &cancellables)
     
     wait(for: [expectStructureCopied], timeout: 1000)
+
+    let copiedRoot = destinationDir.appendingPathComponent(sourceDir.lastPathComponent)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: copiedRoot.path))
+    XCTAssertEqual(
+      try Data(contentsOf: copiedRoot.appendingPathComponent(sourceFile.lastPathComponent)),
+      sourceFileData
+    )
   }
 }

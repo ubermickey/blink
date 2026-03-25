@@ -80,6 +80,27 @@ void __setupProcessEnv(void) {
   ssh_init();
 }
 
+BOOL __isBlinkUITestMode(void) {
+  return [[[NSProcessInfo processInfo] environment][@"BLINK_UI_TEST_MODE"] isEqualToString:@"1"];
+}
+
+NSString * __blinkUITestEntry(void) {
+  return [[NSProcessInfo processInfo] environment][@"BLINK_UI_TEST_ENTRY"];
+}
+
+void __dispatchBlinkUITestAction(SEL action, NSInteger retriesRemaining) {
+  dispatch_after(
+    dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)),
+    dispatch_get_main_queue(),
+    ^{
+      BOOL handled = [[UIApplication sharedApplication] sendAction:action to:nil from:nil forEvent:nil];
+      if (!handled && retriesRemaining > 0) {
+        __dispatchBlinkUITestAction(action, retriesRemaining - 1);
+      }
+    }
+  );
+}
+
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
   
   [Migrator perform];
@@ -130,9 +151,20 @@ void __setupProcessEnv(void) {
 
   [UIApplication sharedApplication].applicationSupportsShakeToEdit = NO;
   
-  [_NSFileProviderManager syncWithBKHosts];
+  if (!__isBlinkUITestMode()) {
+    [_NSFileProviderManager syncWithBKHosts];
+  }
   
   [PurchasesUserModelObjc preparePurchasesUserModel];
+
+  if (__isBlinkUITestMode()) {
+    NSString *entry = __blinkUITestEntry();
+    if ([entry isEqualToString:@"config"]) {
+      __dispatchBlinkUITestAction(@selector(showConfigAction), 10);
+    } else if ([entry isEqualToString:@"snippets"]) {
+      __dispatchBlinkUITestAction(@selector(showSnippetsAction), 10);
+    }
+  }
   
 #ifdef BLINK_BUILD_ENABLED
   build_auto_start_wg_ports();

@@ -1,0 +1,85 @@
+{
+  "configurations" : [
+    {
+      "id" : "9D3B0B3E-CF91-4A16-B2A8-0D044F9A8D85",
+      "name" : "Default Test Configuration",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:Blink.xcodeproj",
+      "identifier" : "EA0BA18A1C0CC57B00719C1A",
+      "name" : "Blink"
+    }
+  },
+  "testTargets" : [
+    {
+      "parallelizable" : false,
+      "target" : {
+        "containerPath" : "container:Blink.xcodeproj",
+        "identifier" : "D265FBB92317DD3C0017EAC4",
+        "name" : "BlinkTests"
+      }
+    },
+    {
+      "parallelizable" : false,
+      "target" : {
+        "containerPath" : "container:Blink.xcodeproj",
+        "identifier" : "07FABB8B25C9AEC100E1CC2C",
+        "name" : "SSHTests"
+      }
+    },
+    {
+      "parallelizable" : false,
+      "target" : {
+        "containerPath" : "container:Blink.xcodeproj",
+        "identifier" : "07FABBB625C9AECF00E1CC2C",
+        "name" : "BlinkFilesTests"
+      }
+    },
+    {
+      "parallelizable" : false,
+      "target" : {
+        "containerPath" : "container:Blink.xcodeproj",
+        "identifier" : "BDD6D13627594BF900E76F1F",
+        "name" : "BlinkConfigTests"
+      }
+    },
+    {
+      "parallelizable" : false,
+      "target" : {
+        "containerPath" : "container:Blink.xcodeproj",
+        "identifier" : "BDBFA30B2728914F00C77798",
+        "name" : "BlinkCodeTests"
+      }
+    },
+    {
+      "parallelizable" : false,
+      "target" : {
+        "containerPath" : "container:Blink.xcodeproj",
+        "identifier" : "D22277D42A26115300D4C708",
+        "name" : "BlinkSnippetsTests"
+      }
+    },
+    {
+      "parallelizable" : false,
+      "target" : {
+        "containerPath" : "container:Blink.xcodeproj",
+        "identifier" : "BD9513E92B4F5A7A00A7BEBE",
+        "name" : "BlinkFileProviderTests"
+      }
+    },
+    {
+      "parallelizable" : false,
+      "target" : {
+        "containerPath" : "container:Blink.xcodeproj",
+        "identifier" : "EA0BA1A31C0CC57B00719C1A",
+        "name" : "BlinkUITests"
+      }
+    }
+  ],
+  "version" : 1
+}

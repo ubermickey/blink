@@ -1,0 +1,293 @@
+{
+  "version": 1,
+  "modes": {
+    "fast": [
+      "prep_baseline",
+      "g0_toolchain",
+      "g1_compile_sim",
+      "g1_compile_device_generic",
+      "g2_core",
+      "g2_files",
+      "g2_code_snippets",
+      "g2_ui_smoke"
+    ],
+    "full": [
+      "prep_baseline",
+      "g0_toolchain",
+      "g1_compile_sim",
+      "g1_compile_device_generic",
+      "g2_core",
+      "g2_files",
+      "g2_code_snippets",
+      "g2_ui_smoke",
+      "g3_runtime_smoke",
+      "g4_ssh_auth",
+      "g4_mosh_bootstrap",
+      "g4_scp_sftp",
+      "g4_file_provider",
+      "g4_portforward",
+      "g4_blinkcode",
+      "g4_free_build_runtime",
+      "g8_acceptance",
+      "g9_release"
+    ]
+  },
+  "lanes": [
+    {
+      "lane": "prep_baseline",
+      "gate": "Prep / Baseline",
+      "command": "./scripts/ios/baseline-sync",
+      "depends_on": [],
+      "resource_group": "host",
+      "requires_fixture": false,
+      "requires_device": false,
+      "artifact_dir": "prep-baseline",
+      "coverage_mode": "full",
+      "worker": "gpt_5_3_codex__orchestrator_core"
+    },
+    {
+      "lane": "g0_toolchain",
+      "gate": "G0 Toolchain",
+      "command": "./scripts/ios/lanes/g0_toolchain.sh",
+      "depends_on": [
+        "prep_baseline"
+      ],
+      "resource_group": "host",
+      "requires_fixture": false,
+      "requires_device": false,
+      "artifact_dir": "g0-toolchain",
+      "coverage_mode": "full",
+      "worker": "gpt_5_3_codex__compile_sharding"
+    },
+    {
+      "lane": "g1_compile_sim",
+      "gate": "G1 Compile",
+      "command": "./scripts/ios/lanes/g1_compile_sim.sh",
+      "depends_on": [
+        "g0_toolchain"
+      ],
+      "resource_group": "simulator_build",
+      "requires_fixture": false,
+      "requires_device": false,
+      "artifact_dir": "g1-compile-sim",
+      "coverage_mode": "full",
+      "worker": "gpt_5_3_codex__compile_sharding"
+    },
+    {
+      "lane": "g1_compile_device_generic",
+      "gate": "G1 Compile",
+      "command": "./scripts/ios/lanes/g1_compile_device_generic.sh",
+      "depends_on": [
+        "g0_toolchain"
+      ],
+      "resource_group": "host",
+      "requires_fixture": false,
+      "requires_device": false,
+      "artifact_dir": "g1-compile-device-generic",
+      "coverage_mode": "full",
+      "worker": "gpt_5_3_codex__compile_sharding"
+    },
+    {
+      "lane": "g2_core",
+      "gate": "G2 Test",
+      "command": "./scripts/ios/lanes/g2_test_core.sh",
+      "depends_on": [
+        "g1_compile_sim"
+      ],
+      "resource_group": "simulator_core",
+      "requires_fixture": false,
+      "requires_device": false,
+      "artifact_dir": "g2-test/g2_core",
+      "coverage_mode": "full",
+      "worker": "gpt_5_3_codex__simulator_sharding"
+    },
+    {
+      "lane": "g2_files",
+      "gate": "G2 Test",
+      "command": "./scripts/ios/lanes/g2_test_files.sh",
+      "depends_on": [
+        "g1_compile_sim"
+      ],
+      "resource_group": "simulator_files",
+      "requires_fixture": true,
+      "requires_device": false,
+      "artifact_dir": "g2-test/g2_files",
+      "coverage_mode": "full",
+      "worker": "gpt_5_3_codex__simulator_sharding"
+    },
+    {
+      "lane": "g2_code_snippets",
+      "gate": "G2 Test",
+      "command": "./scripts/ios/lanes/g2_test_code_snippets.sh",
+      "depends_on": [
+        "g1_compile_sim"
+      ],
+      "resource_group": "simulator_code_snippets",
+      "requires_fixture": false,
+      "requires_device": false,
+      "artifact_dir": "g2-test/g2_code_snippets",
+      "coverage_mode": "full",
+      "worker": "gpt_5_3_codex__simulator_sharding"
+    },
+    {
+      "lane": "g2_ui_smoke",
+      "gate": "G2 Test",
+      "command": "./scripts/ios/lanes/g2_test_ui_smoke.sh",
+      "depends_on": [
+        "g1_compile_sim"
+      ],
+      "resource_group": "simulator_ui_smoke",
+      "requires_fixture": false,
+      "requires_device": false,
+      "artifact_dir": "g2-test/g2_ui_smoke",
+      "coverage_mode": "full",
+      "worker": "gpt_5_3_codex__simulator_sharding"
+    },
+    {
+      "lane": "g3_runtime_smoke",
+      "gate": "G3 Runtime Smoke",
+      "command": "./scripts/ios/deploy-device",
+      "depends_on": [
+        "g1_compile_device_generic",
+        "g2_core",
+        "g2_files",
+        "g2_code_snippets",
+        "g2_ui_smoke"
+      ],
+      "resource_group": "device_ipad",
+      "requires_fixture": false,
+      "requires_device": true,
+      "artifact_dir": "g3-runtime-smoke",
+      "coverage_mode": "full",
+      "worker": "gpt_5_3_codex__orchestrator_core"
+    },
+    {
+      "lane": "g4_ssh_auth",
+      "gate": "G4 Domain Gates",
+      "command": "./scripts/ios/lanes/g4_ssh_auth.sh",
+      "depends_on": [
+        "g3_runtime_smoke"
+      ],
+      "resource_group": "fixture",
+      "requires_fixture": true,
+      "requires_device": false,
+      "artifact_dir": "g4-domain-gates/g4_ssh_auth",
+      "coverage_mode": "full",
+      "worker": "gpt_5_3_codex__g4_ssh_mosh"
+    },
+    {
+      "lane": "g4_mosh_bootstrap",
+      "gate": "G4 Domain Gates",
+      "command": "./scripts/ios/lanes/g4_mosh_bootstrap.sh",
+      "depends_on": [
+        "g3_runtime_smoke"
+      ],
+      "resource_group": "fixture",
+      "requires_fixture": true,
+      "requires_device": false,
+      "artifact_dir": "g4-domain-gates/g4_mosh_bootstrap",
+      "coverage_mode": "full",
+      "worker": "gpt_5_3_codex__g4_ssh_mosh"
+    },
+    {
+      "lane": "g4_scp_sftp",
+      "gate": "G4 Domain Gates",
+      "command": "./scripts/ios/lanes/g4_scp_sftp.sh",
+      "depends_on": [
+        "g3_runtime_smoke"
+      ],
+      "resource_group": "fixture",
+      "requires_fixture": true,
+      "requires_device": false,
+      "artifact_dir": "g4-domain/g4_scp_sftp",
+      "coverage_mode": "full",
+      "worker": "gpt_5_3_codex__g4_file_provider"
+    },
+    {
+      "lane": "g4_file_provider",
+      "gate": "G4 Domain Gates",
+      "command": "./scripts/ios/lanes/g4_file_provider.sh",
+      "depends_on": [
+        "g3_runtime_smoke"
+      ],
+      "resource_group": "fixture",
+      "requires_fixture": true,
+      "requires_device": false,
+      "artifact_dir": "g4-domain/g4_file_provider",
+      "coverage_mode": "full",
+      "worker": "gpt_5_3_codex__g4_file_provider"
+    },
+    {
+      "lane": "g4_portforward",
+      "gate": "G4 Domain Gates",
+      "command": "./scripts/ios/lanes/g4_portforward.sh",
+      "depends_on": [
+        "g3_runtime_smoke"
+      ],
+      "resource_group": "fixture",
+      "requires_fixture": true,
+      "requires_device": false,
+      "artifact_dir": "g4-domain-gates/g4_portforward",
+      "coverage_mode": "full",
+      "worker": "gpt_5_3_codex__g4_ssh_mosh"
+    },
+    {
+      "lane": "g4_blinkcode",
+      "gate": "G4 Domain Gates",
+      "command": "./scripts/ios/lanes/g4_blinkcode.sh",
+      "depends_on": [
+        "g3_runtime_smoke"
+      ],
+      "resource_group": "simulator_g4_blinkcode",
+      "requires_fixture": false,
+      "requires_device": false,
+      "artifact_dir": "g4-domain/g4_blinkcode",
+      "coverage_mode": "full",
+      "worker": "gpt_5_3_codex__g4_blinkcode"
+    },
+    {
+      "lane": "g4_free_build_runtime",
+      "gate": "G4 Domain Gates",
+      "command": "./scripts/ios/lanes/g4_free_build_runtime.sh",
+      "depends_on": [
+        "g3_runtime_smoke"
+      ],
+      "resource_group": "simulator_g4_free_build_runtime",
+      "requires_fixture": false,
+      "requires_device": false,
+      "artifact_dir": "g4-domain/g4_free_build_runtime",
+      "coverage_mode": "full",
+      "worker": "gpt_5_3_codex__g4_blinkcode"
+    },
+    {
+      "lane": "g8_acceptance",
+      "gate": "G8 UX/Product",
+      "command": "./scripts/ios/acceptance",
+      "depends_on": [
+        "g3_runtime_smoke"
+      ],
+      "resource_group": "device_ipad",
+      "requires_fixture": false,
+      "requires_device": true,
+      "artifact_dir": "g8-ux-product",
+      "coverage_mode": "manual",
+      "worker": "gpt_5_3_codex__docs_contracts"
+    },
+    {
+      "lane": "g9_release",
+      "gate": "G9 Release",
+      "command": "",
+      "depends_on": [
+        "g8_acceptance"
+      ],
+      "resource_group": "host",
+      "requires_fixture": false,
+      "requires_device": false,
+      "artifact_dir": "g9-release",
+      "coverage_mode": "manual",
+      "worker": "gpt_5_3_codex__ci_matrix",
+      "manual": true,
+      "manual_reason": "Paid-build/CI release gate automation is pending integration."
+    }
+  ]
+}

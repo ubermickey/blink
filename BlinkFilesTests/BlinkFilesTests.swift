@@ -35,13 +35,24 @@ import Combine
 @testable import BlinkFiles
 
 class BlinkFilesTests: XCTestCase {
+  var fixtureRoot: URL!
+  var sourceRoot: URL!
   
   override func setUpWithError() throws {
-    // Put setup code here. This method is called before the invocation of each test method in the class.
+    fixtureRoot = FileManager.default.temporaryDirectory
+      .appendingPathComponent("BlinkFilesTests-\(UUID().uuidString)", isDirectory: true)
+    sourceRoot = fixtureRoot.appendingPathComponent("source", isDirectory: true)
+
+    try FileManager.default.createDirectory(at: sourceRoot, withIntermediateDirectories: true)
+    try Data("alpha".utf8).write(to: sourceRoot.appendingPathComponent("libalpha"))
+    try Data("beta".utf8).write(to: sourceRoot.appendingPathComponent("libbeta"))
+    try Data("gamma".utf8).write(to: sourceRoot.appendingPathComponent("notes.txt"))
   }
   
   override func tearDownWithError() throws {
-    // Put teardown code here. This method is called after the invocation of each test method in the class.
+    if let fixtureRoot {
+      try? FileManager.default.removeItem(at: fixtureRoot)
+    }
   }
   
   func testExample() throws {
@@ -60,15 +71,22 @@ class BlinkFilesTests: XCTestCase {
     let f = Local()
     
     let expectMatches = expectation(description: "Matches")
+    var matches: [String] = []
     
-    let c = f.walkTo("/Users/carlos")
+    let c = f.walkTo(sourceRoot.path)
       .flatMap { $0.translatorsMatching(path: "lib*") }
       .assertNoFailure()
       .sink(receiveCompletion: { _ in
+        XCTAssertEqual(matches.count, 2)
+        XCTAssertEqual(Set(matches), Set([
+          self.sourceRoot.appendingPathComponent("libalpha").path,
+          self.sourceRoot.appendingPathComponent("libbeta").path,
+        ]))
         expectMatches.fulfill()
       }, receiveValue: { t in
-        XCTAssertTrue(t.current.starts(with: "/Users/carlos/lib"))
-        print(t.current)
+        XCTAssertTrue(t.current.starts(with: self.sourceRoot.path))
+        XCTAssertTrue((t.current as NSString).lastPathComponent.starts(with: "lib"))
+        matches.append(t.current)
       })
     
     wait(for: [expectMatches], timeout: 3)

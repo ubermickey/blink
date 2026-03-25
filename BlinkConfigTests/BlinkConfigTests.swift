@@ -39,6 +39,7 @@ class BlinkConfigTests: XCTestCase {
   let hostAlias = "test"
   override func setUpWithError() throws {
     BKHosts.loadHosts()
+    try Data().write(to: BlinkPaths.blinkGlobalSSHConfigFileURL())
     // Put setup code here. This method is called before the invocation of each test method in the class.
     let sshConfigAttachment =
 """
@@ -55,19 +56,24 @@ ControlMaster no
                                 password: "password",
                                 hostKey: "id_rsa",
                                 moshServer: "",
+                                moshPredictOverwrite: "",
+                                moshExperimentalIP: BKMoshExperimentalIPNone,
                                 moshPortRange: "",
                                 startUpCmd: "",
-                                prediction: BKMoshPrediction(rawValue: 0),
+                                prediction: BKMoshPredictionAdaptive,
                                 proxyCmd: "exec nc %h:%p",
                                 proxyJump: "jumphost",
                                 sshConfigAttachment: sshConfigAttachment,
-                                fpDomainsJSON: "")
+                                fpDomainsJSON: "",
+                                agentForwardPrompt: BKAgentForwardNo,
+                                agentForwardKeys: [])
   }
   
   override func tearDownWithError() throws {
     // Put teardown code here. This method is called after the invocation of each test method in the class.
-    try fm.removeItem(at: URL(fileURLWithPath: BlinkPaths.blinkHostsFile()))
-    try fm.removeItem(at: BlinkPaths.blinkSSHConfigFileURL())
+    try? fm.removeItem(at: URL(fileURLWithPath: BlinkPaths.blinkHostsFile()))
+    try? fm.removeItem(at: BlinkPaths.blinkSSHConfigFileURL())
+    try? fm.removeItem(at: BlinkPaths.blinkGlobalSSHConfigFileURL())
   }
   
 func testBKHostsToSSHConfig() throws {

@@ -1,0 +1,800 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+import threading
+import time
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+TERMINAL_STATUSES = {"pass", "fail", "skip_reduced_coverage", "pending_manual"}
+
+
+@dataclass(frozen=True)
+class Lane:
+    lane: str
+    gate: str
+    command: str
+    depends_on: list[str]
+    resource_group: str
+    requires_fixture: bool
+    requires_device: bool
+    artifact_dir: str
+    coverage_mode: str
+    worker: str
+    manual: bool = False
+    manual_reason: str = ""
+
+    @property
+    def resource_groups(self) -> list[str]:
+        groups = []
+        for token in self.resource_group.split(","):
+            name = token.strip()
+            if name:
+                groups.append(name)
+        return groups or ["host"]
+
+
+@dataclass
+class LaneResult:
+    lane: str
+    gate: str
+    status: str
+    command: str
+    duration_sec: float
+    notes: str
+    artifacts: list[str]
+    requires_manual: bool
+    resource_group: str
+    worker: str
+    coverage_mode: str
+    outputs: dict[str, str] = field(default_factory=dict)
+
+
+def utc_compact() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def default_loop_dir(repo_root: Path) -> Path:
+    return repo_root / ".build" / "completion-loop" / utc_compact()
+
+
+def run_process(
+    command: str,
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    log_path: Path,
+) -> tuple[int, float]:
+    start = time.time()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w", encoding="utf-8") as log_handle:
+        process = subprocess.run(
+            command,
+            shell=True,
+            executable="/bin/bash",
+            cwd=str(cwd),
+            env=env,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+        )
+    return process.returncode, time.time() - start
+
+
+def report_call(script_dir: Path, args: list[str]) -> None:
+    cmd = [sys.executable, str(script_dir / "report.py"), *args]
+    subprocess.run(cmd, check=True)
+
+
+def parse_manifest(path: Path) -> tuple[dict[str, Lane], dict[str, list[str]]]:
+    payload = json.loads(path.read_text())
+    raw_lanes = payload.get("lanes", [])
+    raw_modes = payload.get("modes", {})
+    required = {
+        "lane",
+        "gate",
+        "command",
+        "depends_on",
+        "resource_group",
+        "requires_fixture",
+        "requires_device",
+        "artifact_dir",
+        "coverage_mode",
+    }
+
+    lanes: dict[str, Lane] = {}
+    for raw in raw_lanes:
+        missing = sorted(required - set(raw))
+        if missing:
+            raise ValueError(f"Lane {raw.get('lane', '<unknown>')} is missing keys: {', '.join(missing)}")
+
+        lane = Lane(
+            lane=str(raw["lane"]),
+            gate=str(raw["gate"]),
+            command=str(raw["command"]),
+            depends_on=[str(item) for item in raw.get("depends_on", [])],
+            resource_group=str(raw["resource_group"]),
+            requires_fixture=bool(raw["requires_fixture"]),
+            requires_device=bool(raw["requires_device"]),
+            artifact_dir=str(raw["artifact_dir"]),
+            coverage_mode=str(raw["coverage_mode"]),
+            worker=str(raw.get("worker", "gpt_5_3_codex__orchestrator_core")),
+            manual=bool(raw.get("manual", False)) or not str(raw.get("command", "")).strip(),
+            manual_reason=str(raw.get("manual_reason", "Lane is marked as manual.")),
+        )
+        if lane.lane in lanes:
+            raise ValueError(f"Duplicate lane in manifest: {lane.lane}")
+        lanes[lane.lane] = lane
+
+    modes: dict[str, list[str]] = {}
+    for mode_name, lane_names in raw_modes.items():
+        if not isinstance(lane_names, list):
+            raise ValueError(f"Mode {mode_name} must be a list.")
+        modes[str(mode_name)] = [str(name) for name in lane_names]
+
+    for lane in lanes.values():
+        for dep in lane.depends_on:
+            if dep not in lanes:
+                raise ValueError(f"Lane {lane.lane} depends on unknown lane: {dep}")
+
+    return lanes, modes
+
+
+def topo_expand(mode_lanes: list[str], lanes: dict[str, Lane]) -> list[str]:
+    order: list[str] = []
+    temp: set[str] = set()
+    perm: set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in perm:
+            return
+        if name in temp:
+            raise ValueError(f"Dependency cycle detected at lane: {name}")
+        if name not in lanes:
+            raise ValueError(f"Mode references unknown lane: {name}")
+        temp.add(name)
+        for dep in lanes[name].depends_on:
+            visit(dep)
+        temp.remove(name)
+        perm.add(name)
+        order.append(name)
+
+    for lane_name in mode_lanes:
+        visit(lane_name)
+
+    return order
+
+
+def merge_dep_outputs(dep_names: list[str], results: dict[str, LaneResult]) -> dict[str, str]:
+    merged: dict[str, str] = {}
+    for dep in dep_names:
+        dep_result = results.get(dep)
+        if dep_result is None:
+            continue
+        for key, value in dep_result.outputs.items():
+            if isinstance(value, str):
+                merged[key] = value
+    return merged
+
+
+def parse_env_file(path: Path) -> dict[str, str]:
+    outputs: dict[str, str] = {}
+    if not path.exists():
+        return outputs
+    for line in path.read_text().splitlines():
+        item = line.strip()
+        if not item or item.startswith("#") or "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        outputs[key.strip()] = value.strip()
+    return outputs
+
+
+def read_lane_metadata(artifact_dir: Path) -> dict[str, Any]:
+    path = artifact_dir / "lane-metadata.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {}
+
+
+def ensure_marker(artifact_dir: Path, filename: str, text: str) -> Path:
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    marker = artifact_dir / filename
+    marker.write_text(text.rstrip() + "\n")
+    return marker
+
+
+def local_device_host() -> str:
+    if os.environ.get("FIXTURE_DEVICE_HOST"):
+        return os.environ["FIXTURE_DEVICE_HOST"]
+    try:
+        output = subprocess.run(
+            ["scutil", "--get", "LocalHostName"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        host = output.stdout.strip()
+        if host:
+            return f"{host}.local"
+    except OSError:
+        pass
+    return f"{socket.gethostname().split('.')[0]}.local"
+
+
+def has_usable_fixture() -> tuple[bool, str]:
+    if shutil.which("docker") is None:
+        return False, "docker is not installed; fixture-dependent lanes were skipped with reduced coverage."
+    probe = subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    if probe.returncode != 0:
+        return False, "docker is unavailable; fixture-dependent lanes were skipped with reduced coverage."
+    return True, "docker is available"
+
+
+def resolve_device(repo_root: Path, env: dict[str, str]) -> tuple[bool, str]:
+    command = f"source {shlex.quote(str(repo_root / 'scripts' / 'ios' / 'common.sh'))}; resolve_device_id"
+    proc = subprocess.run(
+        ["/bin/bash", "-lc", command],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    if proc.returncode == 0:
+        udid = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
+        if udid:
+            return True, udid
+        return False, "resolve_device_id returned an empty device id."
+    error_text = (proc.stderr or proc.stdout or "").strip()
+    return False, error_text or "No connected iOS device detected."
+
+
+def resolve_simulator(repo_root: Path, env: dict[str, str]) -> tuple[bool, str]:
+    command = f"source {shlex.quote(str(repo_root / 'scripts' / 'ios' / 'common.sh'))}; resolve_simulator_id"
+    proc = subprocess.run(
+        ["/bin/bash", "-lc", command],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    if proc.returncode == 0:
+        udid = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
+        if udid:
+            return True, udid
+        return False, "resolve_simulator_id returned an empty simulator id."
+    error_text = (proc.stderr or proc.stdout or "").strip()
+    return False, error_text or "No available iOS simulator detected."
+
+
+def load_simulator_devices() -> dict[str, Any]:
+    proc = subprocess.run(
+        ["xcrun", "simctl", "list", "devices", "available", "-j"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "xcrun simctl list devices failed")
+    return json.loads(proc.stdout)
+
+
+def load_simulator_device_types() -> dict[str, str]:
+    proc = subprocess.run(
+        ["xcrun", "simctl", "list", "devicetypes", "-j"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "xcrun simctl list devicetypes failed")
+    payload = json.loads(proc.stdout)
+    return {
+        str(item.get("name", "")): str(item.get("identifier", ""))
+        for item in payload.get("devicetypes", [])
+        if item.get("name") and item.get("identifier")
+    }
+
+
+def create_ephemeral_simulator(repo_root: Path, env: dict[str, str], lane_name: str, run_token: str) -> tuple[str | None, str]:
+    ok, base_udid = resolve_simulator(repo_root, env)
+    if not ok:
+        return None, base_udid
+
+    devices_payload = load_simulator_devices()
+    base_name = ""
+    runtime_identifier = ""
+    for runtime, devices in devices_payload.get("devices", {}).items():
+        for device in devices:
+            if str(device.get("udid", "")) == base_udid:
+                base_name = str(device.get("name", ""))
+                runtime_identifier = runtime
+                break
+        if runtime_identifier:
+            break
+
+    if not base_name or not runtime_identifier:
+        return None, f"Unable to inspect base simulator {base_udid}."
+
+    device_types = load_simulator_device_types()
+    device_type_identifier = device_types.get(base_name, "")
+    if not device_type_identifier:
+        return None, f"Unable to resolve device type identifier for simulator {base_name}."
+
+    simulator_name = f"Blink-{lane_name}-{run_token}"
+    create_proc = subprocess.run(
+        ["xcrun", "simctl", "create", simulator_name, device_type_identifier, runtime_identifier],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if create_proc.returncode != 0:
+        return None, create_proc.stderr.strip() or f"Unable to create simulator clone for {lane_name}."
+
+    created_udid = create_proc.stdout.strip()
+    if not created_udid:
+        return None, f"xcrun simctl create returned no simulator id for {lane_name}."
+    return created_udid, ""
+
+
+def delete_ephemeral_simulator(simulator_id: str) -> None:
+    subprocess.run(
+        ["xcrun", "simctl", "delete", simulator_id],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+
+def build_lane_env(
+    *,
+    base_env: dict[str, str],
+    lane: Lane,
+    loop_dir: Path,
+    dep_outputs: dict[str, str],
+    run_token: str,
+) -> dict[str, str]:
+    env = base_env.copy()
+    env.update(dep_outputs)
+    env["BLINK_COMPLETION_LOOP_DIR"] = str(loop_dir)
+    env["BLINK_V5_ORCHESTRATED"] = "1"
+    env["RESOURCE_GROUP"] = lane.resource_group
+    env["WORKER_NAME"] = lane.worker
+    env["LANE_WORKER"] = lane.worker
+    env["COVERAGE_MODE"] = lane.coverage_mode
+    env["REQUIRES_FIXTURE"] = "true" if lane.requires_fixture else "false"
+    env["REQUIRES_DEVICE"] = "true" if lane.requires_device else "false"
+
+    fixture_run_id = env.get("FIXTURE_RUN_ID", f"{run_token}-{lane.lane}")
+    env["FIXTURE_RUN_ID"] = fixture_run_id
+    env["FIXTURE_SSH_PORT"] = env.get("FIXTURE_SSH_PORT", "2222")
+    env["FIXTURE_MOSH_PORT"] = env.get("FIXTURE_MOSH_PORT", "2223")
+    env["FIXTURE_DEVICE_HOST"] = env.get("FIXTURE_DEVICE_HOST", local_device_host())
+    env["FIXTURE_REMOTE_ROOT"] = env.get("FIXTURE_REMOTE_ROOT", f"~/fps/{fixture_run_id}")
+    return env
+
+
+def run_lane(
+    *,
+    repo_root: Path,
+    lane: Lane,
+    command: str,
+    loop_dir: Path,
+    dep_outputs: dict[str, str],
+    base_env: dict[str, str],
+    run_token: str,
+    resource_locks: dict[str, threading.Lock],
+) -> LaneResult:
+    artifact_dir = (loop_dir / lane.artifact_dir).resolve()
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    env = build_lane_env(
+        base_env=base_env,
+        lane=lane,
+        loop_dir=loop_dir,
+        dep_outputs=dep_outputs,
+        run_token=run_token,
+    )
+    temp_simulator_id: str | None = None
+    if not lane.requires_device and (
+        lane.lane == "g1_compile_sim" or lane.lane.startswith("g2_") or lane.lane.startswith("g4_")
+    ):
+        temp_simulator_id, simulator_note = create_ephemeral_simulator(repo_root, env, lane.lane, run_token)
+        if temp_simulator_id:
+            env["SIMULATOR_ID"] = temp_simulator_id
+            env["LANE_SIMULATOR_ID"] = temp_simulator_id
+        else:
+            command_log = artifact_dir / "lane.log"
+            command_log.parent.mkdir(parents=True, exist_ok=True)
+            command_log.write_text((simulator_note or "Unable to allocate ephemeral simulator.") + "\n")
+            return LaneResult(
+                lane=lane.lane,
+                gate=lane.gate,
+                status="fail",
+                command=command,
+                duration_sec=0.0,
+                notes=simulator_note or "Unable to allocate ephemeral simulator.",
+                artifacts=[str(command_log)],
+                requires_manual=False,
+                resource_group=lane.resource_group,
+                worker=lane.worker,
+                coverage_mode=lane.coverage_mode,
+                outputs={},
+            )
+
+    locks = [resource_locks.setdefault(group, threading.Lock()) for group in sorted(lane.resource_groups)]
+    for lock in locks:
+        lock.acquire()
+
+    try:
+        command_log = artifact_dir / "lane.log"
+        return_code, duration = run_process(
+            command,
+            cwd=repo_root,
+            env=env,
+            log_path=command_log,
+        )
+    finally:
+        for lock in reversed(locks):
+            lock.release()
+        if temp_simulator_id:
+            delete_ephemeral_simulator(temp_simulator_id)
+
+    status = "pass" if return_code == 0 else "fail"
+    notes = "Lane completed successfully." if status == "pass" else f"Lane command failed with exit code {return_code}."
+    coverage_mode = lane.coverage_mode
+    artifacts = [str(command_log)]
+    outputs: dict[str, str] = {}
+
+    metadata = read_lane_metadata(artifact_dir)
+    if metadata:
+        metadata_status = str(metadata.get("status", "")).strip()
+        if metadata_status in TERMINAL_STATUSES:
+            if status == "pass" or metadata_status == "fail":
+                status = metadata_status
+        metadata_notes = str(metadata.get("notes", "")).strip()
+        if metadata_notes:
+            notes = metadata_notes
+        metadata_coverage = str(metadata.get("coverage_mode", "")).strip()
+        if metadata_coverage:
+            coverage_mode = metadata_coverage
+        metadata_artifacts = metadata.get("artifacts", [])
+        if isinstance(metadata_artifacts, list):
+            for item in metadata_artifacts:
+                if item:
+                    artifacts.append(str(item))
+        metadata_outputs = metadata.get("outputs", {})
+        if isinstance(metadata_outputs, dict):
+            for key, value in metadata_outputs.items():
+                if isinstance(value, str):
+                    outputs[key] = value
+
+    outputs_path = artifact_dir / "lane-outputs.env"
+    outputs.update(parse_env_file(outputs_path))
+    artifacts = sorted(set(artifacts))
+
+    return LaneResult(
+        lane=lane.lane,
+        gate=lane.gate,
+        status=status,
+        command=command,
+        duration_sec=duration,
+        notes=notes,
+        artifacts=artifacts,
+        requires_manual=(status == "pending_manual"),
+        resource_group=lane.resource_group,
+        worker=lane.worker,
+        coverage_mode=coverage_mode,
+        outputs=outputs,
+    )
+
+
+def append_report(script_dir: Path, report_path: Path, result: LaneResult) -> None:
+    report_call(
+        script_dir,
+        [
+            "add",
+            "--report",
+            str(report_path),
+            "--gate",
+            result.gate,
+            "--status",
+            result.status,
+            "--command",
+            result.command,
+            "--duration",
+            f"{result.duration_sec:.2f}",
+            "--notes",
+            result.notes,
+            "--artifacts",
+            ",".join(result.artifacts),
+            "--requires-manual",
+            "true" if result.requires_manual else "false",
+            "--lane",
+            result.lane,
+            "--resource-group",
+            result.resource_group,
+            "--worker",
+            result.worker,
+            "--coverage-mode",
+            result.coverage_mode,
+        ],
+    )
+
+
+def make_manual_result(lane: Lane, note: str, status: str, loop_dir: Path) -> LaneResult:
+    artifact_dir = (loop_dir / lane.artifact_dir).resolve()
+    marker = ensure_marker(artifact_dir, "lane-status.txt", note)
+    return LaneResult(
+        lane=lane.lane,
+        gate=lane.gate,
+        status=status,
+        command=lane.command or "(manual)",
+        duration_sec=0.0,
+        notes=note,
+        artifacts=[str(marker)],
+        requires_manual=(status == "pending_manual"),
+        resource_group=lane.resource_group,
+        worker=lane.worker,
+        coverage_mode=lane.coverage_mode,
+        outputs={},
+    )
+
+
+def dependency_block_status(dep_results: list[LaneResult]) -> tuple[str, str] | None:
+    failed = [res.lane for res in dep_results if res.status == "fail"]
+    if failed:
+        return "fail", f"Blocked by failed dependencies: {', '.join(failed)}."
+    pending = [res.lane for res in dep_results if res.status == "pending_manual"]
+    if pending:
+        return "pending_manual", f"Pending manual dependencies: {', '.join(pending)}."
+    return None
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Blink v5 parallel lane conductor.")
+    parser.add_argument("--mode", choices=["fast", "full"], required=True)
+    parser.add_argument("--ci", action="store_true")
+    parser.add_argument("--allow-no-fixture", action="store_true")
+    parser.add_argument("--skip-fixture", action="store_true")
+    parser.add_argument("--skip-ui-tests", action="store_true")
+    parser.add_argument("--device-id", default="")
+    parser.add_argument("--report-dir", default="")
+    parser.add_argument("--manifest", default="")
+    parser.add_argument("--max-workers", type=int, default=max(4, min(12, (os.cpu_count() or 4))))
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--list-lanes", action="store_true")
+    return parser.parse_args()
+
+
+def materialize_command(lane: Lane, args: argparse.Namespace) -> str:
+    command = lane.command.strip()
+    if not command:
+        return command
+
+    parts = [command]
+    if lane.lane == "g0_toolchain":
+        if not args.skip_fixture:
+            parts.append("--check-fixture")
+            if args.allow_no_fixture or args.ci or args.mode == "fast":
+                parts.append("--allow-no-fixture")
+        if args.ci:
+            parts.append("--ci")
+        return " ".join(parts)
+
+    if lane.lane in {"g4_ssh_auth", "g4_mosh_bootstrap", "g4_portforward"} and args.ci:
+        parts.append("--ci")
+    if lane.lane in {"g4_ssh_auth", "g4_mosh_bootstrap", "g4_portforward", "g4_scp_sftp", "g4_file_provider"}:
+        if args.allow_no_fixture or args.ci or args.skip_fixture:
+            parts.append("--allow-no-fixture")
+
+    return " ".join(parts)
+
+
+def main() -> int:
+    args = parse_args()
+    script_dir = Path(__file__).resolve().parent
+    repo_root = script_dir.parent.parent
+    manifest_path = Path(args.manifest).resolve() if args.manifest else (script_dir / "lanes.json").resolve()
+    report_dir = args.report_dir or os.environ.get("BLINK_COMPLETION_LOOP_DIR", "")
+    loop_dir = Path(report_dir).resolve() if report_dir else default_loop_dir(repo_root).resolve()
+    report_path = loop_dir / "report.json"
+    run_token = utc_compact()
+
+    lanes, modes = parse_manifest(manifest_path)
+    if args.mode not in modes:
+        raise SystemExit(f"Mode {args.mode} not found in manifest {manifest_path}")
+    selected = topo_expand(modes[args.mode], lanes)
+
+    if args.list_lanes:
+        for lane_name in selected:
+            lane = lanes[lane_name]
+            print(f"{lane.lane}\t{lane.gate}\t{lane.resource_group}")
+        return 0
+
+    if args.dry_run:
+        print(f"mode={args.mode}")
+        print(f"manifest={manifest_path}")
+        for lane_name in selected:
+            lane = lanes[lane_name]
+            rendered = materialize_command(lane, args) or "(manual)"
+            print(f"{lane.lane}: depends_on={lane.depends_on} resource_group={lane.resource_group} command={rendered}")
+        return 0
+
+    loop_dir.mkdir(parents=True, exist_ok=True)
+    report_call(
+        script_dir,
+        [
+            "init",
+            "--report",
+            str(report_path),
+            "--repo-root",
+            str(repo_root),
+        ],
+    )
+
+    base_env = os.environ.copy()
+    base_env["BLINK_COMPLETION_LOOP_DIR"] = str(loop_dir)
+    if args.device_id:
+        base_env["DEVICE_ID"] = args.device_id
+
+    fixture_ok, fixture_note = has_usable_fixture()
+    if args.skip_fixture:
+        fixture_ok = False
+        fixture_note = "Fixture checks disabled by --skip-fixture."
+    allow_reduced_coverage = args.allow_no_fixture or args.ci or args.mode == "fast" or args.skip_fixture
+    needs_device = any(lanes[name].requires_device and not lanes[name].manual for name in selected)
+    device_ok = True
+    device_note = ""
+    if needs_device:
+        device_ok, device_note = resolve_device(repo_root, base_env)
+        if device_ok and device_note:
+            base_env["DEVICE_ID"] = device_note
+
+    print(f"[orchestrate-v5] mode={args.mode} lanes={len(selected)} loop_dir={loop_dir}")
+    print(f"[orchestrate-v5] fixture={fixture_note}")
+    if needs_device:
+        print(f"[orchestrate-v5] device={'available' if device_ok else 'unavailable'} {device_note}")
+
+    results: dict[str, LaneResult] = {}
+    pending: set[str] = set(selected)
+    running: dict[Future[LaneResult], str] = {}
+    resource_locks: dict[str, threading.Lock] = {}
+
+    with ThreadPoolExecutor(max_workers=max(1, args.max_workers), thread_name_prefix="lane-worker") as executor:
+        while pending or running:
+            progressed = False
+
+            for lane_name in selected:
+                if lane_name not in pending:
+                    continue
+                lane = lanes[lane_name]
+                if any(dep not in results for dep in lane.depends_on):
+                    continue
+
+                dep_results = [results[dep] for dep in lane.depends_on]
+                dep_block = dependency_block_status(dep_results)
+                if dep_block:
+                    status, note = dep_block
+                    result = make_manual_result(lane, note, status, loop_dir)
+                    results[lane_name] = result
+                    append_report(script_dir, report_path, result)
+                    pending.remove(lane_name)
+                    progressed = True
+                    print(f"[orchestrate-v5] {lane_name}: {status} ({note})")
+                    continue
+
+                if lane.manual:
+                    note = lane.manual_reason or "Lane is marked as manual."
+                    result = make_manual_result(lane, note, "pending_manual", loop_dir)
+                    results[lane_name] = result
+                    append_report(script_dir, report_path, result)
+                    pending.remove(lane_name)
+                    progressed = True
+                    print(f"[orchestrate-v5] {lane_name}: pending_manual")
+                    continue
+
+                if args.skip_ui_tests and "ui" in lane.lane.lower():
+                    note = "UI lanes were skipped by --skip-ui-tests."
+                    result = make_manual_result(lane, note, "skip_reduced_coverage", loop_dir)
+                    results[lane_name] = result
+                    append_report(script_dir, report_path, result)
+                    pending.remove(lane_name)
+                    progressed = True
+                    print(f"[orchestrate-v5] {lane_name}: skip_reduced_coverage ({note})")
+                    continue
+
+                if lane.requires_fixture and not fixture_ok:
+                    note = fixture_note
+                    status = "skip_reduced_coverage" if allow_reduced_coverage else "fail"
+                    result = make_manual_result(lane, note, status, loop_dir)
+                    results[lane_name] = result
+                    append_report(script_dir, report_path, result)
+                    pending.remove(lane_name)
+                    progressed = True
+                    print(f"[orchestrate-v5] {lane_name}: {status} ({note})")
+                    continue
+
+                if lane.requires_device and not device_ok:
+                    note = device_note or "No connected iOS device detected."
+                    result = make_manual_result(lane, note, "pending_manual", loop_dir)
+                    results[lane_name] = result
+                    append_report(script_dir, report_path, result)
+                    pending.remove(lane_name)
+                    progressed = True
+                    print(f"[orchestrate-v5] {lane_name}: pending_manual ({note})")
+                    continue
+
+                dep_outputs = merge_dep_outputs(lane.depends_on, results)
+                command = materialize_command(lane, args)
+                future = executor.submit(
+                    run_lane,
+                    repo_root=repo_root,
+                    lane=lane,
+                    command=command,
+                    loop_dir=loop_dir,
+                    dep_outputs=dep_outputs,
+                    base_env=base_env,
+                    run_token=run_token,
+                    resource_locks=resource_locks,
+                )
+                running[future] = lane_name
+                pending.remove(lane_name)
+                progressed = True
+                print(f"[orchestrate-v5] {lane_name}: started")
+
+            if running:
+                done, _ = wait(set(running.keys()), timeout=0.25, return_when=FIRST_COMPLETED)
+                for finished in done:
+                    lane_name = running.pop(finished)
+                    try:
+                        result = finished.result()
+                    except Exception as exc:  # noqa: BLE001
+                        lane = lanes[lane_name]
+                        note = f"Lane raised exception: {exc}"
+                        result = make_manual_result(lane, note, "fail", loop_dir)
+                    results[lane_name] = result
+                    append_report(script_dir, report_path, result)
+                    print(f"[orchestrate-v5] {lane_name}: {result.status}")
+            elif pending and not progressed:
+                stalled = sorted(pending)
+                for lane_name in stalled:
+                    lane = lanes[lane_name]
+                    unresolved = [dep for dep in lane.depends_on if dep in pending]
+                    note = f"Scheduler stalled; unresolved dependencies: {', '.join(unresolved) or 'unknown'}."
+                    result = make_manual_result(lane, note, "fail", loop_dir)
+                    results[lane_name] = result
+                    append_report(script_dir, report_path, result)
+                    pending.remove(lane_name)
+                    print(f"[orchestrate-v5] {lane_name}: fail ({note})")
+
+    status_counts: dict[str, int] = {}
+    for result in results.values():
+        status_counts[result.status] = status_counts.get(result.status, 0) + 1
+
+    print(f"[orchestrate-v5] report={report_path}")
+    print(f"[orchestrate-v5] status_counts={json.dumps(status_counts, sort_keys=True)}")
+
+    if status_counts.get("fail", 0) > 0:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

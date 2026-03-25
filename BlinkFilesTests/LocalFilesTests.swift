@@ -34,22 +34,43 @@ import Combine
 
 @testable import BlinkFiles
 
+final class FileBox {
+  var file: File?
+}
+
 class LocalFilesTests: XCTestCase {
   var cancellableBag: [AnyCancellable] = []
+  var fixtureRoot: URL!
+  var nestedDir: URL!
+  var sourceFile: URL!
+  var sourceData: Data!
   
   override func setUpWithError() throws {
-    // Put setup code here. This method is called before the invocation of each test method in the class.
-    
+    cancellableBag.removeAll()
+    fixtureRoot = FileManager.default.temporaryDirectory
+      .appendingPathComponent("LocalFilesTests-\(UUID().uuidString)", isDirectory: true)
+    nestedDir = fixtureRoot.appendingPathComponent("nested", isDirectory: true)
+    sourceFile = fixtureRoot.appendingPathComponent("source.bin")
+    sourceData = Data("sample-local-file".utf8)
+
+    try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: nestedDir, withIntermediateDirectories: true)
+    try sourceData.write(to: sourceFile)
+    try Data("nested-value".utf8).write(to: nestedDir.appendingPathComponent("child.txt"))
   }
   override func tearDownWithError() throws {
-    // Put teardown code here. This method is called after the invocation of each test method in the class.
+    cancellableBag.removeAll()
+    if let fixtureRoot {
+      try? FileManager.default.removeItem(at: fixtureRoot)
+    }
   }
   
   func testDirectory() throws {
     let f = Local()
     let expectation = self.expectation(description: "Local")
     
-    f.directoryFilesAndAttributes()
+    f.walkTo(fixtureRoot.path)
+      .flatMap { $0.directoryFilesAndAttributes() }
       .assertNoFailure()
       .sink { items in
         XCTAssertTrue(items.count > 0)
@@ -65,35 +86,36 @@ class LocalFilesTests: XCTestCase {
     let dirWalk = self.expectation(description: "Regular directory")
     
     // Absolute
-    f.walkTo("/Users")
+    f.walkTo(fixtureRoot.path)
       .assertNoFailure()
       .sink { dir in
-        XCTAssertTrue(dir.current == "/Users", "Current dir is \(dir.current)")
+        XCTAssertTrue(dir.current == self.fixtureRoot.path, "Current dir is \(dir.current)")
         dirWalk.fulfill()
       }.store(in: &cancellableBag)
     
     wait(for: [dirWalk], timeout: 1)
     
-    // No permissions
-    let noPermWalk = self.expectation(description: "No permission")
-    f.walkTo("/tmp/inaccessible")
+    // Missing path
+    let missingWalk = self.expectation(description: "Missing path")
+    f.walkTo(fixtureRoot.appendingPathComponent("missing").path)
       .catch { err -> Just<Translator> in
         let err = err as! LocalFileError
-        XCTAssertTrue(err.msg == "Permission denied.", "Received \(err)")
+        XCTAssertTrue(err.msg == "No such file or directory.", "Received \(err)")
         return Just(f)
       }.sink { dir in
-        XCTAssertTrue(dir.current == "/Users/carlos")
-        noPermWalk.fulfill()
+        XCTAssertTrue(dir.current == f.current)
+        missingWalk.fulfill()
       }.store(in: &cancellableBag)
     
-    wait(for: [noPermWalk], timeout: 1)
+    wait(for: [missingWalk], timeout: 1)
     
     // Relative
     let relativeWalk = self.expectation(description: "Relative walk")
-    f.walkTo("carlos")
+    f.walkTo(fixtureRoot.path)
+      .flatMap { $0.walkTo("nested") }
       .assertNoFailure()
       .sink { dir in
-        XCTAssertTrue(dir.current == "/Users/carlos", "Current dir is \(dir.current)")
+        XCTAssertTrue(dir.current == self.nestedDir.path, "Current dir is \(dir.current)")
         relativeWalk.fulfill()
       }.store(in: &cancellableBag)
     
@@ -105,13 +127,20 @@ class LocalFilesTests: XCTestCase {
     // For SFTP it will be useful to have the channel reachable, and then stop it through a timer to test the reconnect.
     let f = Local()
     let expectation = self.expectation(description: "Buffer Complete")
+    let fileBox = FileBox()
     
     // TODO Explicitely close the file or do it once it gets
     // dumped.
-    f.walkTo("/Users/carlos/mosh.pkg")
-      .flatMap { $0.open(flags: O_RDONLY) }
-      .flatMap { $0.read(max: SSIZE_MAX) }
+    f.walkTo(sourceFile.path)
+      .flatMap { (translator: Translator) -> AnyPublisher<File, Error> in
+        translator.open(flags: O_RDONLY)
+      }
+      .flatMap { (file: File) -> AnyPublisher<DispatchData, Error> in
+        fileBox.file = file
+        return fileBox.file!.read(max: SSIZE_MAX)
+      }
       .sink(receiveCompletion: { completion in
+        fileBox.file = nil
         switch completion {
         case .finished:
           expectation.fulfill()
@@ -122,7 +151,7 @@ class LocalFilesTests: XCTestCase {
         }
       },
       receiveValue: { data in
-        XCTAssertFalse(data.count <= 0, "Nothing received")
+        XCTAssertEqual(Data(data), self.sourceData)
       }).store(in: &cancellableBag)
     
     waitForExpectations(timeout: 15, handler: nil)
@@ -137,16 +166,23 @@ class LocalFilesTests: XCTestCase {
     let f = Local()
     let expectation = self.expectation(description: "Buffer Complete")
     let buffer = MemoryBuffer(fast: true)
+    let fileBox = FileBox()
     
     // TODO Explicitely close the file or do it once it gets
     // dumped.
-    f.walkTo("/Users/carlos/Xcode_12.0.1.xip")
-      .flatMap { $0.open(flags: O_RDONLY) }
-      .flatMap { ($0 as! WriterTo).writeTo(buffer) }
+    f.walkTo(sourceFile.path)
+      .flatMap { (translator: Translator) -> AnyPublisher<File, Error> in
+        translator.open(flags: O_RDONLY)
+      }
+      .flatMap { (file: File) -> AnyPublisher<Int, Error> in
+        fileBox.file = file
+        return (fileBox.file! as! WriterTo).writeTo(buffer)
+      }
       .sink(receiveCompletion: { completion in
+        fileBox.file = nil
         switch completion {
         case .finished:
-          XCTAssertTrue(buffer.count == 11210638916, "Data copied does not match.")
+          XCTAssertEqual(buffer.count, self.sourceData.count, "Data copied does not match.")
           expectation.fulfill()
         case .failure(let error as LocalFileError):
           XCTFail(error.msg)
@@ -171,19 +207,30 @@ class LocalFilesTests: XCTestCase {
     let dst = f.clone()
     let expectation = self.expectation(description: "Buffer Complete")
     var written = 0
+    let sourceBox = FileBox()
+    let destinationBox = FileBox()
     // TODO Explicitely close the file or do it once it gets
     // dumped.
-    f.walkTo("/Users/carlos/Xcode_12.0.1.xip")
-      .flatMap { $0.open(flags: O_RDONLY) }
+    f.walkTo(sourceFile.path)
+      .flatMap { (translator: Translator) -> AnyPublisher<File, Error> in
+        translator.open(flags: O_RDONLY)
+      }
       .flatMap { srcFile -> AnyPublisher<Int, Error> in
-        return dst.create(name: "Docker-copy.dmg", mode: 0o644)
+        sourceBox.file = srcFile
+        return dst.walkTo(self.fixtureRoot.path)
+          .flatMap { $0.create(name: "copy.bin", mode: 0o644) }
           .flatMap { dstFile in
-            return (srcFile as! WriterTo).writeTo(dstFile)
+            destinationBox.file = dstFile
+            return (sourceBox.file! as! WriterTo).writeTo(destinationBox.file!)
           }.eraseToAnyPublisher()
       }.sink(receiveCompletion: { completion in
+        sourceBox.file = nil
+        destinationBox.file = nil
         switch completion {
         case .finished:
-          XCTAssertTrue(written == 11210638916, "Data copied does not match.")
+          XCTAssertEqual(written, self.sourceData.count, "Data copied does not match.")
+          let copied = self.fixtureRoot.appendingPathComponent("copy.bin")
+          XCTAssertEqual(try? Data(contentsOf: copied), self.sourceData)
           expectation.fulfill()
         case .failure(let error as LocalFileError):
           XCTFail(error.msg)
@@ -203,15 +250,17 @@ class LocalFilesTests: XCTestCase {
   func testWstat() throws {
     let f = Local()
     let expectation = self.expectation(description: "Buffer Complete")
+    let renamedFile = fixtureRoot.appendingPathComponent("renamed.txt")
     
-    f.walkTo("/tmp/file")
+    f.walkTo(sourceFile.path)
       .flatMap { file -> AnyPublisher<Bool, Error> in
-        let attrs: [FileAttributeKey:Any] = [.name: "/Users/carloscabanero/file_test",
+        let attrs: [FileAttributeKey:Any] = [.name: renamedFile.path,
                                              .modificationDate: NSDate(timeIntervalSinceNow: -40000)]
         return file.wstat(attrs)
       }.sink(receiveCompletion: { completion in
         switch completion {
         case .finished:
+          XCTAssertTrue(FileManager.default.fileExists(atPath: renamedFile.path))
           expectation.fulfill()
         case .failure(let error as LocalFileError):
           XCTFail(error.msg)

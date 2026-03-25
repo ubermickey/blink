@@ -104,6 +104,29 @@ This will download Blink and the associated frameworks: `libssh2`, `OpenSSL`, `l
 
 Although this is the quickest method to get you up and running, if you would like to compile all libraries and resources yourself, refer to the [BUILD.md](BUILD.md) file. Please let us know if you find any issues. Blink is a complex project with multiple low level dependencies and we are still looking for ways to simplify and automate the full compilation process.
 
+## iOS testing loop (v5)
+
+For the free-build iPad loop and upstream baseline checks, use `scripts/ios/`:
+
+```bash
+./scripts/ios/baseline-sync
+./scripts/ios/fixture-up
+./scripts/ios/verify-fast
+./scripts/ios/deploy-device
+./scripts/ios/verify-full
+./scripts/ios/acceptance
+```
+
+The lane source of truth is `scripts/ios/lanes.json`.
+Lane runners live under `scripts/ios/lanes/` and are being integrated behind the existing wrappers.
+
+Current status:
+- `verify-fast` and `verify-full` are still wrapper-style commands.
+- lane-level fan-out is in progress; some lanes are still marked `manual` in `lanes.json`.
+- reports are written to `.build/completion-loop/<timestamp>/report.json` with lane metadata and coverage mode.
+
+See [docs/ios/TESTING_LOOP.md](docs/ios/TESTING_LOOP.md) for flow and contracts, [docs/ios/FEATURE_MATRIX.md](docs/ios/FEATURE_MATRIX.md) for coverage map, and [docs/ios/ACCEPTANCE_CHECKLIST.md](docs/ios/ACCEPTANCE_CHECKLIST.md) for G8/G9 manual gates.
+
 # Using Blink
 Our UI is very straightforward and optimizes the experience on touch devices for the really important part, the terminal. You will jump right into a very simple shell, so you will know what to do. Here are a few more tricks:
 - Type 'help' to find information at the shell.

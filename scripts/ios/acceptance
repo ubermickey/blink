@@ -1,0 +1,178 @@
+#!/bin/bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${SCRIPT_DIR}/common.sh"
+
+complete_mode=0
+notes=""
+source_command="scripts/ios/acceptance"
+report_dir=""
+declare -a evidence_paths=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --stage-only) ;;
+    --complete) complete_mode=1 ;;
+    --notes)
+      shift
+      [[ $# -gt 0 ]] || fail "Missing value for --notes"
+      notes="$1"
+      ;;
+    --source)
+      shift
+      [[ $# -gt 0 ]] || fail "Missing value for --source"
+      source_command="$1"
+      ;;
+    --evidence)
+      shift
+      [[ $# -gt 0 ]] || fail "Missing value for --evidence"
+      evidence_paths+=( "$1" )
+      ;;
+    --report-dir)
+      shift
+      [[ $# -gt 0 ]] || fail "Missing value for --report-dir"
+      report_dir="$1"
+      ;;
+    *)
+      fail "Unknown argument: $1"
+      ;;
+  esac
+  shift
+done
+
+if [[ -n "${report_dir}" ]]; then
+  export BLINK_COMPLETION_LOOP_DIR="${report_dir}"
+fi
+
+ensure_report
+
+readonly GATE_DIR="$(artifact_dir "g8-ux-product")"
+readonly CHECKLIST_SOURCE="${REPO_ROOT}/docs/ios/ACCEPTANCE_CHECKLIST.md"
+readonly CHECKLIST_TARGET="${GATE_DIR}/ACCEPTANCE_CHECKLIST.md"
+readonly STATUS_FILE="${GATE_DIR}/acceptance-status.env"
+readonly STAGING_FILE="${GATE_DIR}/README.txt"
+readonly COMPLETION_FILE="${GATE_DIR}/COMPLETION.txt"
+readonly METADATA_FILE="${GATE_DIR}/lane-metadata.json"
+
+write_lane_metadata() {
+  local status="$1"
+  local notes_value="$2"
+  local artifacts="$3"
+  python3 - "${METADATA_FILE}" "${status}" "${notes_value}" "${artifacts}" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+metadata_path, status, notes_value, artifacts = sys.argv[1:]
+payload = {
+    "lane": "g8_acceptance",
+    "gate": "G8 UX/Product",
+    "status": status,
+    "command": "./scripts/ios/acceptance",
+    "duration_sec": 0.0,
+    "notes": notes_value,
+    "artifacts": [item for item in artifacts.split(",") if item],
+    "resource_group": "device_ipad",
+    "worker": "gpt_5_3_codex__manual_release_wrappers",
+    "coverage_mode": "manual",
+    "requires_fixture": False,
+    "requires_device": True,
+}
+path = Path(metadata_path)
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+PY
+}
+
+[[ -f "${CHECKLIST_SOURCE}" ]] || fail "Acceptance checklist missing at ${CHECKLIST_SOURCE}"
+cp "${CHECKLIST_SOURCE}" "${CHECKLIST_TARGET}"
+
+if [[ "${complete_mode}" -eq 1 ]]; then
+  {
+    printf 'STATUS=pass\n'
+    printf 'UPDATED_AT=%s\n' "$(timestamp_utc)"
+    printf 'SOURCE=%s\n' "${source_command}"
+    printf 'MODE=complete\n'
+  } > "${STATUS_FILE}"
+
+  cat > "${COMPLETION_FILE}" <<EOF
+Acceptance marked complete.
+Timestamp: $(timestamp_utc)
+Source: ${source_command}
+
+Operator notes:
+${notes:-none}
+EOF
+
+  valid_evidence=()
+  for evidence in "${evidence_paths[@]}"; do
+    if [[ -e "${evidence}" ]]; then
+      valid_evidence+=( "${evidence}" )
+    else
+      warn "Evidence path does not exist and will not be reported: ${evidence}"
+    fi
+  done
+
+  artifacts="${CHECKLIST_TARGET},${STATUS_FILE},${COMPLETION_FILE}"
+  if [[ "${#valid_evidence[@]}" -gt 0 ]]; then
+    artifacts="${artifacts},$(IFS=, ; echo "${valid_evidence[*]}")"
+  fi
+  notes_value="Manual acceptance was marked complete by operator input."
+  write_lane_metadata "pass" "${notes_value}" "${artifacts}"
+
+  if [[ "${BLINK_V5_ORCHESTRATED:-0}" != "1" ]]; then
+    report_gate \
+      "G8 UX/Product" \
+      "pass" \
+      "${source_command}" \
+      "0" \
+      "${notes_value}" \
+      "${artifacts}" \
+      "false" \
+      "g8_acceptance" \
+      "device_ipad" \
+      "gpt_5_3_codex__manual_release_wrappers" \
+      "manual" >/dev/null
+  fi
+
+  log "Acceptance marked complete. Artifacts: ${GATE_DIR}"
+else
+  cat > "${STAGING_FILE}" <<EOF
+Acceptance is manual by design.
+
+Use the checklist in:
+${CHECKLIST_TARGET}
+
+Record screenshots, screen recordings, or notes in ${GATE_DIR}, then run:
+scripts/ios/acceptance --complete --notes "<summary>" [--evidence <path>]...
+EOF
+
+  {
+    printf 'STATUS=pending_manual\n'
+    printf 'UPDATED_AT=%s\n' "$(timestamp_utc)"
+    printf 'SOURCE=%s\n' "${source_command}"
+    printf 'MODE=stage\n'
+  } > "${STATUS_FILE}"
+  artifacts="${CHECKLIST_TARGET},${STAGING_FILE},${STATUS_FILE}"
+  notes_value="Manual acceptance staged. Complete checklist and evidence before closing G8/G9."
+  write_lane_metadata "pending_manual" "${notes_value}" "${artifacts}"
+
+  if [[ "${BLINK_V5_ORCHESTRATED:-0}" != "1" ]]; then
+    report_gate \
+      "G8 UX/Product" \
+      "pending_manual" \
+      "${source_command}" \
+      "0" \
+      "${notes_value}" \
+      "${artifacts}" \
+      "true" \
+      "g8_acceptance" \
+      "device_ipad" \
+      "gpt_5_3_codex__manual_release_wrappers" \
+      "manual" >/dev/null
+  fi
+
+  log "Acceptance checklist staged at ${CHECKLIST_TARGET}"
+fi

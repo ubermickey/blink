@@ -66,7 +66,10 @@ class MigrationFileProviderReplicatedExtension: MigrationStep {
 
   private func deleteFileProviderStorage() {
     // Clean up the old File Provider path
-    let fileProviderURL = NSFileProviderManager.default.documentStorageURL
+    guard let fileProviderURL = self.legacyDocumentStorageURL() else {
+      print("Skipping legacy File Provider storage cleanup because document storage is unavailable.")
+      return
+    }
 
     guard let contentURLs = try? FileManager.default.contentsOfDirectory(at: fileProviderURL, includingPropertiesForKeys: nil, options: []) else {
       print("No contents found at \(fileProviderURL.path)")
@@ -81,5 +84,41 @@ class MigrationFileProviderReplicatedExtension: MigrationStep {
         print("Failed to remove \(url.path): \(error)")
       }
     }
+  }
+
+  private func legacyDocumentStorageURL() -> URL? {
+    guard let builtInPlugInsURL = Bundle.main.builtInPlugInsURL,
+          let plugInURLs = try? FileManager.default.contentsOfDirectory(
+            at: builtInPlugInsURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+          ),
+          let fileProviderExtensionURL = plugInURLs.first(where: self._isEmbeddedFileProviderExtension),
+          let documentGroupIdentifier = self._documentGroupIdentifier(for: fileProviderExtensionURL),
+          FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: documentGroupIdentifier) != nil else {
+      return nil
+    }
+
+    return NSFileProviderManager.default.documentStorageURL
+  }
+
+  private func _isEmbeddedFileProviderExtension(_ url: URL) -> Bool {
+    guard url.pathExtension == "appex",
+          let info = NSDictionary(contentsOf: url.appendingPathComponent("Info.plist")) as? [String: Any],
+          let extensionInfo = info["NSExtension"] as? [String: Any],
+          let extensionPointIdentifier = extensionInfo["NSExtensionPointIdentifier"] as? String else {
+      return false
+    }
+
+    return extensionPointIdentifier == "com.apple.fileprovider-nonui"
+  }
+
+  private func _documentGroupIdentifier(for extensionURL: URL) -> String? {
+    guard let info = NSDictionary(contentsOf: extensionURL.appendingPathComponent("Info.plist")) as? [String: Any],
+          let extensionInfo = info["NSExtension"] as? [String: Any] else {
+      return nil
+    }
+
+    return extensionInfo["NSExtensionFileProviderDocumentGroup"] as? String
   }
 }

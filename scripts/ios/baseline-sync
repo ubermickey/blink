@@ -1,0 +1,176 @@
+#!/bin/bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "${SCRIPT_DIR}/common.sh"
+
+readonly GATE_ID="prep-baseline"
+readonly GATE_DIR="$(artifact_dir "${GATE_ID}")"
+readonly TREE_URL="https://api.github.com/repos/blinksh/blink/git/trees/raw?recursive=1"
+readonly CONTENT_API="https://api.github.com/repos/blinksh/blink/contents"
+readonly METADATA_FILE="${GATE_DIR}/lane-metadata.json"
+
+start_epoch="$(python3 - <<'PY'
+import time
+print(time.time())
+PY
+)"
+
+write_lane_metadata() {
+  local status="$1"
+  local duration="$2"
+  local notes="$3"
+  local artifacts="$4"
+  python3 - "${METADATA_FILE}" "${status}" "${duration}" "${notes}" "${artifacts}" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+metadata_path, status, duration, notes, artifacts = sys.argv[1:]
+payload = {
+    "lane": "prep_baseline",
+    "gate": "Prep / Baseline",
+    "status": status,
+    "command": "./scripts/ios/baseline-sync",
+    "duration_sec": float(duration),
+    "notes": notes,
+    "artifacts": [item for item in artifacts.split(",") if item],
+    "resource_group": "host",
+    "worker": "gpt_5_3_codex__orchestrator_core",
+    "coverage_mode": "full",
+    "requires_fixture": False,
+    "requires_device": False,
+}
+path = Path(metadata_path)
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+PY
+}
+
+log "Comparing local Blink layout against blinksh/blink raw."
+curl -fsSL "${TREE_URL}" > "${GATE_DIR}/upstream-tree.json"
+
+python3 - "${REPO_ROOT}" "${GATE_DIR}" "${CONTENT_API}" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import json
+import sys
+import urllib.request
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+gate_dir = Path(sys.argv[2])
+content_api = sys.argv[3]
+
+with (gate_dir / "upstream-tree.json").open() as fh:
+    upstream = json.load(fh)
+
+remote_paths = {item["path"] for item in upstream.get("tree", []) if item.get("type") == "blob"}
+remote_scheme_paths = sorted(
+    path for path in remote_paths
+    if path.startswith("Blink.xcodeproj/xcshareddata/xcschemes/") and path.endswith(".xcscheme")
+)
+local_scheme_paths = sorted(
+    str(path.relative_to(repo_root))
+    for path in (repo_root / "Blink.xcodeproj/xcshareddata/xcschemes").glob("*.xcscheme")
+)
+
+key_files = [
+    "README.md",
+    ".github/workflows/build.yml",
+    "template_setup.xcconfig",
+    "Blink.xcodeproj/xcshareddata/xcschemes/Blink.xcscheme",
+]
+
+results = {
+    "upstream_repo": "blinksh/blink",
+    "branch": "raw",
+    "key_files": [],
+    "upstream_has_blink_ui_tests_dir": any(path.startswith("BlinkUITests/") for path in remote_paths),
+    "upstream_has_xctestplan": any(path.endswith(".xctestplan") for path in remote_paths),
+    "local_has_blink_ui_tests_dir": (repo_root / "BlinkUITests").exists(),
+    "local_has_xctestplan": any(repo_root.rglob("*.xctestplan")),
+    "remote_schemes": [Path(path).name for path in remote_scheme_paths],
+    "local_schemes": [Path(path).name for path in local_scheme_paths],
+    "local_only_schemes": sorted(set(local_scheme_paths) - set(remote_scheme_paths)),
+    "remote_only_schemes": sorted(set(remote_scheme_paths) - set(local_scheme_paths)),
+}
+
+for rel_path in key_files:
+    local_path = repo_root / rel_path
+    request = urllib.request.Request(f"{content_api}/{rel_path}?ref=raw", headers={"Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(request) as response:
+        metadata = json.load(response)
+    remote_sha = metadata["sha"]
+    local_sha = hashlib.sha1(local_path.read_bytes()).hexdigest() if local_path.exists() else None
+    results["key_files"].append(
+        {
+            "path": rel_path,
+            "upstream_sha": remote_sha,
+            "local_sha": local_sha,
+            "matches_upstream": remote_sha == local_sha,
+        }
+    )
+
+blink_scheme = (repo_root / "Blink.xcodeproj/xcshareddata/xcschemes/Blink.xcscheme").read_text()
+results["blink_scheme_has_blink_ui_tests_reference"] = "BlinkUITests" in blink_scheme
+results["blink_scheme_has_legacy_blink_ui_tests_buildable_name"] = 'BuildableName = "Blink.xctest"' in blink_scheme
+
+(gate_dir / "baseline-report.json").write_text(json.dumps(results, indent=2, sort_keys=True) + "\n")
+
+lines = [
+    "# Baseline Sync",
+    "",
+    f"- Upstream: `{results['upstream_repo']}` `raw`",
+    f"- Local BlinkUITests dir present: `{results['local_has_blink_ui_tests_dir']}`",
+    f"- Upstream BlinkUITests dir present: `{results['upstream_has_blink_ui_tests_dir']}`",
+    f"- Local xctestplan present: `{bool(results['local_has_xctestplan'])}`",
+    f"- Upstream xctestplan present: `{results['upstream_has_xctestplan']}`",
+    f"- Blink scheme references BlinkUITests: `{results['blink_scheme_has_blink_ui_tests_reference']}`",
+    f"- Blink scheme still uses legacy BlinkUITests buildable name: `{results['blink_scheme_has_legacy_blink_ui_tests_buildable_name']}`",
+    "",
+    "## Key Files",
+]
+
+for item in results["key_files"]:
+    status = "match" if item["matches_upstream"] else "drift"
+    lines.append(f"- `{item['path']}`: `{status}`")
+
+lines.extend(
+    [
+        "",
+        "## Scheme Drift",
+        f"- Remote shared schemes: `{', '.join(results['remote_schemes'])}`",
+        f"- Local-only shared schemes: `{', '.join(Path(path).name for path in results['local_only_schemes']) or 'none'}`",
+        f"- Remote-only shared schemes: `{', '.join(Path(path).name for path in results['remote_only_schemes']) or 'none'}`",
+    ]
+)
+
+(gate_dir / "baseline-report.md").write_text("\n".join(lines) + "\n")
+PY
+
+duration="$(python3 - "${start_epoch}" <<'PY'
+import sys
+import time
+print(f"{time.time() - float(sys.argv[1]):.2f}")
+PY
+)"
+
+artifacts="${GATE_DIR}/baseline-report.json,${GATE_DIR}/baseline-report.md,${GATE_DIR}/upstream-tree.json"
+notes="Compared local structure against blinksh/blink raw and recorded scheme/file drift."
+write_lane_metadata "pass" "${duration}" "${notes}" "${artifacts}"
+
+if [[ "${BLINK_V5_ORCHESTRATED:-0}" != "1" ]]; then
+  report_gate \
+    "Prep / Baseline" \
+    "pass" \
+    "scripts/ios/baseline-sync" \
+    "${duration}" \
+    "${notes}" \
+    "${artifacts}" \
+    "false" >/dev/null
+fi
+
+log "Baseline report written to ${GATE_DIR}/baseline-report.md"
