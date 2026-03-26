@@ -10,6 +10,38 @@ ensure_report
 readonly GATE_DIR="$(artifact_dir "g3-runtime-smoke")"
 readonly DERIVED_DATA_DIR="${BLINK_COMPLETION_LOOP_DIR}/DerivedData-device"
 readonly METADATA_FILE="${GATE_DIR}/lane-metadata.json"
+readonly TARGET_BUILD_DIR="${DERIVED_DATA_DIR}/TargetBuild"
+
+build_device_with_scheme() {
+  run_logged "${GATE_DIR}/device-build.log" \
+    xcodebuild \
+    -project "${REPO_ROOT}/Blink.xcodeproj" \
+    -scheme Blink \
+    -configuration Debug \
+    -destination "id=${device_id}" \
+    -allowProvisioningUpdates \
+    -derivedDataPath "${DERIVED_DATA_DIR}" \
+    build
+}
+
+build_device_with_target() {
+  run_logged "${GATE_DIR}/device-build.log" \
+    xcodebuild \
+    -project "${REPO_ROOT}/Blink.xcodeproj" \
+    -target Blink \
+    -configuration Debug \
+    -destination "generic/platform=iOS" \
+    -allowProvisioningUpdates \
+    SYMROOT="${TARGET_BUILD_DIR}" \
+    OBJROOT="${TARGET_BUILD_DIR}/Intermediates.noindex" \
+    SHARED_PRECOMPS_DIR="${TARGET_BUILD_DIR}/SharedPrecompiledHeaders" \
+    build
+}
+
+should_retry_with_target_build() {
+  grep -q "Unable to find a destination matching the provided destination specifier" "${GATE_DIR}/device-build.log" \
+    && grep -Eq "error:iOS [0-9.]+" "${GATE_DIR}/device-build.log"
+}
 
 warm_device_connection() {
   local device="$1"
@@ -60,6 +92,9 @@ report_failure() {
   local notes="$1"
   local requires_manual="$2"
   local artifacts="${GATE_DIR}/device-build.log,${GATE_DIR}/device-install.log,${GATE_DIR}/device-launch.log"
+  if [[ -f "${GATE_DIR}/device-build-scheme.log" ]]; then
+    artifacts="${GATE_DIR}/device-build-scheme.log,${artifacts}"
+  fi
   write_lane_metadata "fail" "${notes}" "${requires_manual}" "${artifacts}"
   if [[ "${BLINK_V5_ORCHESTRATED:-0}" != "1" ]]; then
     report_gate \
@@ -87,20 +122,24 @@ log "Refreshing connection state for ${device_id}"
 warm_device_connection "${device_id}"
 
 log "Building Blink for device ${device_id}"
-if ! run_logged "${GATE_DIR}/device-build.log" \
-  xcodebuild \
-  -project "${REPO_ROOT}/Blink.xcodeproj" \
-  -scheme Blink \
-  -configuration Debug \
-  -destination "id=${device_id}" \
-  -allowProvisioningUpdates \
-  -derivedDataPath "${DERIVED_DATA_DIR}" \
-  build; then
-  report_failure "Device build failed for ${device_id}." "false"
-  fail "Device build failed for ${device_id}"
+build_mode="scheme"
+app_path="${DERIVED_DATA_DIR}/Build/Products/Debug-iphoneos/Blink.app"
+if ! build_device_with_scheme; then
+  if should_retry_with_target_build; then
+    log "Scheme destination resolution failed; retrying with direct Blink target build"
+    build_mode="target"
+    app_path="${TARGET_BUILD_DIR}/Debug-iphoneos/Blink.app"
+    cp "${GATE_DIR}/device-build.log" "${GATE_DIR}/device-build-scheme.log"
+    if ! build_device_with_target; then
+      report_failure "Device build failed for ${device_id} after scheme and target retries." "false"
+      fail "Device build failed for ${device_id} after scheme and target retries"
+    fi
+  else
+    report_failure "Device build failed for ${device_id}." "false"
+    fail "Device build failed for ${device_id}"
+  fi
 fi
 
-app_path="${DERIVED_DATA_DIR}/Build/Products/Debug-iphoneos/Blink.app"
 [[ -d "${app_path}" ]] || fail "Built app not found at ${app_path}"
 
 log "Refreshing connection state for ${device_id}"
@@ -128,7 +167,10 @@ if ! run_logged "${GATE_DIR}/device-launch.log" \
 fi
 
 artifacts="${GATE_DIR}/device-build.log,${GATE_DIR}/device-install.log,${GATE_DIR}/device-launch.log"
-notes="Installed and launched ${bundle} on ${device_id}. Background/resume remains part of manual acceptance."
+if [[ "${build_mode}" == "target" && -f "${GATE_DIR}/device-build-scheme.log" ]]; then
+  artifacts="${GATE_DIR}/device-build-scheme.log,${artifacts}"
+fi
+notes="Installed and launched ${bundle} on ${device_id} using ${build_mode} build mode. Background/resume remains part of manual acceptance."
 write_lane_metadata "pass" "${notes}" "false" "${artifacts}"
 if [[ "${BLINK_V5_ORCHESTRATED:-0}" != "1" ]]; then
   report_gate \
