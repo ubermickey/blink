@@ -242,6 +242,7 @@
 		D2179F2D2136A5DC00B0850A /* GeoManager.m in Sources */ = {isa = PBXBuildFile; fileRef = D2179F2C2136A5DC00B0850A /* GeoManager.m */; };
 		D2179F2F2136DBC600B0850A /* geo.m in Sources */ = {isa = PBXBuildFile; fileRef = D2179F2E2136DBC600B0850A /* geo.m */; };
 		D218069525CC27AC00B98902 /* AppBridge.m in Sources */ = {isa = PBXBuildFile; fileRef = D218069425CC27AC00B98902 /* AppBridge.m */; };
+		D218069C25CC27C100B98902 /* AppKitBridge.bundle in Embed PlugIns */ = {isa = PBXBuildFile; fileRef = D218068725CC277900B98902 /* AppKitBridge.bundle */; platformFilter = maccatalyst; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D218072725CD499C00B98902 /* LibSSH.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2334EC425C1C04700385378 /* LibSSH.xcframework */; };
 		D218073825CD4AF400B98902 /* openssl.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2F64C9425CA99AD00F2225D /* openssl.xcframework */; };
 		D21A3FD721943BE200269705 /* dark-settings-ipad-29pt.png in Resources */ = {isa = PBXBuildFile; fileRef = D21A3FC621943BE200269705 /* dark-settings-ipad-29pt.png */; };
@@ -753,6 +754,7 @@
 			dstPath = "";
 			dstSubfolderSpec = 13;
 			files = (
+				D218069C25CC27C100B98902 /* AppKitBridge.bundle in Embed PlugIns */,
 			);
 			name = "Embed PlugIns";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -2865,6 +2867,7 @@
 				D24AFD5B222410E700CFD3C1 /* PBXTargetDependency */,
 				07FABB9825C9AEC100E1CC2C /* PBXTargetDependency */,
 				07FABBC325C9AECF00E1CC2C /* PBXTargetDependency */,
+				D218069E25CC27C100B98902 /* PBXTargetDependency */,
 				9827126A262E4BDB00F883FA /* PBXTargetDependency */,
 				BDCB7164268E1577007D7047 /* PBXTargetDependency */,
 				BD9EA1D22718E19000874007 /* PBXTargetDependency */,
@@ -3807,6 +3810,12 @@
 			platformFilter = ios;
 			target = BD9513E02B4F5A7A00A7BEBE /* BlinkFileProvider */;
 			targetProxy = BDECEA482CDE7544007BBCF6 /* PBXContainerItemProxy */;
+		};
+		D218069E25CC27C100B98902 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			platformFilter = maccatalyst;
+			target = D218068625CC277900B98902 /* AppKitBridge */;
+			targetProxy = D218069D25CC27C100B98902 /* PBXContainerItemProxy */;
 		};
 		D22277D82A26115300D4C708 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
